@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libvulkan-dev
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --locked
+
+      - name: Strip binary
+        run: strip target/${{ matrix.target }}/release/hyprboard
+
+      - name: Create archive
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          TARGET=${{ matrix.target }}
+          STAGING="hyprboard-${VERSION}-${TARGET}"
+          mkdir -p "$STAGING"
+          cp target/${TARGET}/release/hyprboard "$STAGING/"
+          cp README.md LICENSE HYPRLAND.md "$STAGING/" 2>/dev/null || true
+          cp -r assets "$STAGING/" 2>/dev/null || true
+          tar czf "${STAGING}.tar.gz" "$STAGING"
+          sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          TARGET=${{ matrix.target }}
+          gh release create v${VERSION} \
+            --title "Release v${VERSION}" \
+            --generate-notes \
+            "hyprboard-${VERSION}-${TARGET}.tar.gz" \
+            "hyprboard-${VERSION}-${TARGET}.tar.gz.sha256"
