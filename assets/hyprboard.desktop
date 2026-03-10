@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=HyprBoard
+Comment=Lightweight image reference board for Wayland
+Exec=hyprboard
+Icon=hyprboard
+Terminal=false
+Type=Application
+Categories=Graphics;Utility;
+Keywords=reference;board;images;moodboard;
