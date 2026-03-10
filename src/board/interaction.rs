@@ -5,7 +5,9 @@ use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use crate::clipboard;
 use crate::items::BoardItem;
 
-use super::render::{draw_grid, draw_item, draw_selection_handles, HandleHit, HANDLE_SIZE, ROT_HANDLE_OFFSET};
+use super::render::{
+    HANDLE_SIZE, HandleHit, ROT_HANDLE_OFFSET, draw_grid, draw_item, draw_selection_handles,
+};
 use super::undo::{Command, UndoStack};
 
 const LAZY_DECODE_PER_FRAME: usize = 2;
@@ -115,6 +117,7 @@ fn screen_to_scene(ui: &Ui, screen_pos: Pos2) -> Pos2 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_scene(
     ui: &mut Ui,
     items: &mut Vec<BoardItem>,
@@ -136,7 +139,10 @@ pub fn render_scene(
     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
     let primary_released = ui.input(|i| i.pointer.primary_released());
     let shift_held = ui.input(|i| i.modifiers.shift);
-    let double_clicked = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
+    let double_clicked = ui.input(|i| {
+        i.pointer
+            .button_double_clicked(egui::PointerButton::Primary)
+    });
 
     // Expanded visible rect for handle culling
     let cull_rect = visible_rect.expand(HANDLE_SIZE + ROT_HANDLE_OFFSET);
@@ -147,14 +153,14 @@ pub fn render_scene(
 
     // Lazy decode: decode up to N visible items per frame
     let mut decoded = 0;
-    for idx in 0..items.len() {
+    for item in items.iter_mut() {
         if decoded >= LAZY_DECODE_PER_FRAME {
             break;
         }
-        if items[idx].needs_decode() && items[idx].bounding_rect().intersects(cull_rect) {
+        if item.needs_decode() && item.bounding_rect().intersects(cull_rect) {
             *next_texture_id += 1;
             let name = format!("lazy-{}", next_texture_id);
-            if items[idx].ensure_texture(ui.ctx(), &name) {
+            if item.ensure_texture(ui.ctx(), &name) {
                 decoded += 1;
             }
         }
@@ -216,20 +222,18 @@ pub fn render_scene(
     // State machine
     let current_state = std::mem::take(interaction);
     *interaction = match current_state {
-        InteractionState::Idle => {
-            handle_idle(
-                primary_pressed,
-                double_clicked,
-                shift_held,
-                pointer_pos,
-                &handle_hit,
-                hovered_item,
-                hovered_label,
-                items,
-                selected,
-                undo_stack,
-            )
-        }
+        InteractionState::Idle => handle_idle(
+            primary_pressed,
+            double_clicked,
+            shift_held,
+            pointer_pos,
+            &handle_hit,
+            hovered_item,
+            hovered_label,
+            items,
+            selected,
+            undo_stack,
+        ),
         InteractionState::DraggingItems {
             drag_started,
             last_pointer,
@@ -246,17 +250,15 @@ pub fn render_scene(
             snap_to_grid,
             grid_size,
         ),
-        InteractionState::SelectionRect { start } => {
-            handle_selection_rect(
-                ui,
-                primary_released,
-                shift_held,
-                pointer_pos,
-                start,
-                items,
-                selected,
-            )
-        }
+        InteractionState::SelectionRect { start } => handle_selection_rect(
+            ui,
+            primary_released,
+            shift_held,
+            pointer_pos,
+            start,
+            items,
+            selected,
+        ),
         InteractionState::ResizingHandle {
             corner,
             start_mouse,
@@ -305,12 +307,7 @@ pub fn render_scene(
             items,
             undo_stack,
         ),
-        InteractionState::EditingText { idx } => handle_editing_text(
-            ui,
-            idx,
-            items,
-            undo_stack,
-        ),
+        InteractionState::EditingText { idx } => handle_editing_text(ui, idx, items, undo_stack),
         InteractionState::DraggingLabel {
             item_idx,
             label_idx,
@@ -329,13 +326,7 @@ pub fn render_scene(
         InteractionState::EditingLabel {
             item_idx,
             label_idx,
-        } => handle_editing_label(
-            ui,
-            item_idx,
-            label_idx,
-            items,
-            undo_stack,
-        ),
+        } => handle_editing_label(ui, item_idx, label_idx, items, undo_stack),
         InteractionState::ExportingRegion { start, current } => handle_export_region(
             ui,
             primary_pressed,
@@ -350,6 +341,7 @@ pub fn render_scene(
     };
 }
 
+#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 fn handle_idle(
     primary_pressed: bool,
     double_clicked: bool,
@@ -363,56 +355,53 @@ fn handle_idle(
     undo_stack: &mut UndoStack,
 ) -> InteractionState {
     // Double-click on label: edit label
-    if double_clicked {
-        if let Some((item_idx, label_idx)) = hovered_label {
-            selected.clear();
-            selected.insert(item_idx);
-            return InteractionState::EditingLabel {
-                item_idx,
-                label_idx,
-            };
-        }
+    if double_clicked && let Some((item_idx, label_idx)) = hovered_label {
+        selected.clear();
+        selected.insert(item_idx);
+        return InteractionState::EditingLabel {
+            item_idx,
+            label_idx,
+        };
     }
 
     // Single click on label: start dragging
-    if primary_pressed && !double_clicked {
-        if let Some((item_idx, label_idx)) = hovered_label {
-            if let Some(pointer) = pointer_pos {
-                let start_offset = items.get(item_idx)
-                    .and_then(|item| item.labels().get(label_idx))
-                    .map(|l| l.offset)
-                    .unwrap_or(Vec2::ZERO);
-                selected.clear();
-                selected.insert(item_idx);
-                return InteractionState::DraggingLabel {
-                    item_idx,
-                    label_idx,
-                    start_offset,
-                    last_pointer: pointer,
-                };
-            }
-        }
+    if primary_pressed
+        && !double_clicked
+        && let Some((item_idx, label_idx)) = hovered_label
+        && let Some(pointer) = pointer_pos
+    {
+        let start_offset = items
+            .get(item_idx)
+            .and_then(|item| item.labels().get(label_idx))
+            .map(|l| l.offset)
+            .unwrap_or(Vec2::ZERO);
+        selected.clear();
+        selected.insert(item_idx);
+        return InteractionState::DraggingLabel {
+            item_idx,
+            label_idx,
+            start_offset,
+            last_pointer: pointer,
+        };
     }
 
     // Double-click: edit text or create new text
-    if double_clicked {
-        if let Some(pointer) = pointer_pos {
-            if let Some(idx) = hovered_item {
-                if items.get(idx).is_some_and(|i| i.text_content().is_some()) {
-                    selected.clear();
-                    selected.insert(idx);
-                    return InteractionState::EditingText { idx };
-                }
-            } else {
-                // Double-click on empty canvas — create new text
-                let pos = pointer.to_vec2();
-                items.push(BoardItem::new_text("Text".into(), pos));
-                let idx = items.len() - 1;
-                undo_stack.push(Command::Add { count: 1 });
+    if double_clicked && let Some(pointer) = pointer_pos {
+        if let Some(idx) = hovered_item {
+            if items.get(idx).is_some_and(|i| i.text_content().is_some()) {
                 selected.clear();
                 selected.insert(idx);
                 return InteractionState::EditingText { idx };
             }
+        } else {
+            // Double-click on empty canvas — create new text
+            let pos = pointer.to_vec2();
+            items.push(BoardItem::new_text("Text".into(), pos));
+            let idx = items.len() - 1;
+            undo_stack.push(Command::Add { count: 1 });
+            selected.clear();
+            selected.insert(idx);
+            return InteractionState::EditingText { idx };
         }
     }
 
@@ -465,6 +454,7 @@ fn handle_idle(
     InteractionState::SelectionRect { start: pointer }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_dragging(
     primary_released: bool,
     primary_down: bool,
@@ -472,7 +462,7 @@ fn handle_dragging(
     mut drag_started: bool,
     last_pointer: Pos2,
     start_positions: Vec<(usize, Vec2)>,
-    items: &mut Vec<BoardItem>,
+    items: &mut [BoardItem],
     undo_stack: &mut UndoStack,
     snap_to_grid: bool,
     grid_size: f32,
@@ -492,12 +482,12 @@ fn handle_dragging(
 
         if drag_started {
             let indices: Vec<usize> = start_positions.iter().map(|(i, _)| *i).collect();
-            if let Some((first_idx, first_start)) = start_positions.first() {
-                if let Some(item) = items.get(*first_idx) {
-                    let delta = item.transform().position - *first_start;
-                    if delta.length_sq() > 0.01 {
-                        undo_stack.push(Command::Move { indices, delta });
-                    }
+            if let Some((first_idx, first_start)) = start_positions.first()
+                && let Some(item) = items.get(*first_idx)
+            {
+                let delta = item.transform().position - *first_start;
+                if delta.length_sq() > 0.01 {
+                    undo_stack.push(Command::Move { indices, delta });
                 }
             }
         }
@@ -505,19 +495,17 @@ fn handle_dragging(
     }
 
     let mut current_pointer = last_pointer;
-    if primary_down {
-        if let Some(mouse) = pointer_pos {
-            let drag_delta = mouse - last_pointer;
-            if drag_delta.length_sq() > 0.0 {
-                drag_started = true;
-                let sel: Vec<usize> = start_positions.iter().map(|(i, _)| *i).collect();
-                for idx in sel {
-                    if let Some(item) = items.get_mut(idx) {
-                        item.transform_mut().position += drag_delta;
-                    }
+    if primary_down && let Some(mouse) = pointer_pos {
+        let drag_delta = mouse - last_pointer;
+        if drag_delta.length_sq() > 0.0 {
+            drag_started = true;
+            let sel: Vec<usize> = start_positions.iter().map(|(i, _)| *i).collect();
+            for idx in sel {
+                if let Some(item) = items.get_mut(idx) {
+                    item.transform_mut().position += drag_delta;
                 }
-                current_pointer = mouse;
             }
+            current_pointer = mouse;
         }
     }
 
@@ -595,11 +583,7 @@ fn start_resize(
     }
 }
 
-fn start_rotate(
-    mouse: Pos2,
-    items: &[BoardItem],
-    selected: &HashSet<usize>,
-) -> InteractionState {
+fn start_rotate(mouse: Pos2, items: &[BoardItem], selected: &HashSet<usize>) -> InteractionState {
     let Some(group_rect) = selected_bounding_rect(items, selected) else {
         return InteractionState::Idle;
     };
@@ -623,6 +607,7 @@ fn start_rotate(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_resizing(
     primary_released: bool,
     pointer_pos: Option<Pos2>,
@@ -631,7 +616,7 @@ fn handle_resizing(
     initial_scales: Vec<(usize, Vec2)>,
     initial_positions: Vec<(usize, Vec2)>,
     group_rect: Rect,
-    items: &mut Vec<BoardItem>,
+    items: &mut [BoardItem],
     undo_stack: &mut UndoStack,
 ) -> InteractionState {
     if primary_released {
@@ -690,6 +675,7 @@ fn handle_resizing(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_rotating(
     primary_released: bool,
     pointer_pos: Option<Pos2>,
@@ -697,7 +683,7 @@ fn handle_rotating(
     start_angle: f32,
     initial_rotations: Vec<(usize, f32)>,
     initial_positions: Vec<(usize, Vec2)>,
-    items: &mut Vec<BoardItem>,
+    items: &mut [BoardItem],
     undo_stack: &mut UndoStack,
 ) -> InteractionState {
     if primary_released {
@@ -753,6 +739,7 @@ fn handle_rotating(
     }
 }
 
+#[allow(clippy::ptr_arg)]
 fn handle_editing_text(
     ui: &mut Ui,
     idx: usize,
@@ -775,7 +762,10 @@ fn handle_editing_text(
 
     let rect = items[idx].bounding_rect();
     let resp = ui.put(
-        Rect::from_min_size(pos.to_pos2(), Vec2::new(rect.width().max(100.0), font_size * 2.0)),
+        Rect::from_min_size(
+            pos.to_pos2(),
+            Vec2::new(rect.width().max(100.0), font_size * 2.0),
+        ),
         egui::TextEdit::singleline(&mut text)
             .id(text_edit_id)
             .font(egui::FontId::proportional(font_size))
@@ -809,6 +799,7 @@ fn handle_editing_text(
     InteractionState::EditingText { idx }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_dragging_label(
     primary_released: bool,
     pointer_pos: Option<Pos2>,
@@ -816,11 +807,12 @@ fn handle_dragging_label(
     label_idx: usize,
     start_offset: Vec2,
     last_pointer: Pos2,
-    items: &mut Vec<BoardItem>,
+    items: &mut [BoardItem],
     undo_stack: &mut UndoStack,
 ) -> InteractionState {
     if primary_released {
-        let current_offset = items.get(item_idx)
+        let current_offset = items
+            .get(item_idx)
             .and_then(|item| item.labels().get(label_idx))
             .map(|l| l.offset)
             .unwrap_or(start_offset);
@@ -838,12 +830,11 @@ fn handle_dragging_label(
     if let Some(mouse) = pointer_pos {
         let delta = mouse - last_pointer;
         if delta.length_sq() > 0.0 {
-            if let Some(item) = items.get_mut(item_idx) {
-                if let Some(labels) = item.labels_mut() {
-                    if let Some(label) = labels.get_mut(label_idx) {
-                        label.offset += delta;
-                    }
-                }
+            if let Some(item) = items.get_mut(item_idx)
+                && let Some(labels) = item.labels_mut()
+                && let Some(label) = labels.get_mut(label_idx)
+            {
+                label.offset += delta;
             }
             return InteractionState::DraggingLabel {
                 item_idx,
@@ -862,6 +853,7 @@ fn handle_dragging_label(
     }
 }
 
+#[allow(clippy::ptr_arg)]
 fn handle_editing_label(
     ui: &mut Ui,
     item_idx: usize,
@@ -880,7 +872,9 @@ fn handle_editing_label(
     let label_pos = image_pos + label.offset;
     let font_size = label.font_size;
 
-    let text_edit_id = egui::Id::new("label_edit_inline").with(item_idx).with(label_idx);
+    let text_edit_id = egui::Id::new("label_edit_inline")
+        .with(item_idx)
+        .with(label_idx);
     let mut text = old_text.clone();
 
     let resp = ui.put(
@@ -891,12 +885,11 @@ fn handle_editing_label(
             .desired_width(200.0),
     );
 
-    if let Some(item) = items.get_mut(item_idx) {
-        if let Some(labels) = item.labels_mut() {
-            if let Some(label) = labels.get_mut(label_idx) {
-                label.text = text.clone();
-            }
-        }
+    if let Some(item) = items.get_mut(item_idx)
+        && let Some(labels) = item.labels_mut()
+        && let Some(label) = labels.get_mut(label_idx)
+    {
+        label.text = text.clone();
     }
 
     if !resp.has_focus() {
@@ -907,12 +900,11 @@ fn handle_editing_label(
     let escape = ui.input(|i| i.key_pressed(Key::Escape));
     if enter || escape || resp.lost_focus() {
         if escape {
-            if let Some(item) = items.get_mut(item_idx) {
-                if let Some(labels) = item.labels_mut() {
-                    if let Some(label) = labels.get_mut(label_idx) {
-                        label.text = old_text;
-                    }
-                }
+            if let Some(item) = items.get_mut(item_idx)
+                && let Some(labels) = item.labels_mut()
+                && let Some(label) = labels.get_mut(label_idx)
+            {
+                label.text = old_text;
             }
         } else if text != old_text {
             undo_stack.push(Command::EditLabel {
@@ -923,20 +915,20 @@ fn handle_editing_label(
             });
         }
         // Remove empty labels
-        let is_empty = items.get(item_idx)
+        let is_empty = items
+            .get(item_idx)
             .and_then(|item| item.labels().get(label_idx))
-            .map_or(false, |l| l.text.is_empty());
-        if is_empty {
-            if let Some(item) = items.get_mut(item_idx) {
-                if let Some(labels) = item.labels_mut() {
-                    let label = labels.remove(label_idx);
-                    undo_stack.push(Command::DeleteLabel {
-                        item_idx,
-                        label_idx,
-                        label,
-                    });
-                }
-            }
+            .is_some_and(|l| l.text.is_empty());
+        if is_empty
+            && let Some(item) = items.get_mut(item_idx)
+            && let Some(labels) = item.labels_mut()
+        {
+            let label = labels.remove(label_idx);
+            undo_stack.push(Command::DeleteLabel {
+                item_idx,
+                label_idx,
+                label,
+            });
         }
         return InteractionState::Idle;
     }
@@ -947,6 +939,7 @@ fn handle_editing_label(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_cropping(
     ui: &mut Ui,
     primary_pressed: bool,
@@ -956,7 +949,7 @@ fn handle_cropping(
     idx: usize,
     start: Option<Pos2>,
     current: Pos2,
-    items: &mut Vec<BoardItem>,
+    items: &mut [BoardItem],
     undo_stack: &mut UndoStack,
 ) -> InteractionState {
     let Some(item) = items.get(idx) else {
@@ -1003,20 +996,22 @@ fn handle_cropping(
                 current: clamped,
             };
         }
-        return InteractionState::Cropping { idx, start, current };
+        return InteractionState::Cropping {
+            idx,
+            start,
+            current,
+        };
     }
 
     let start = start.expect("start should be Some at this point");
 
     // Dragging — update current
     let mut cur = current;
-    if primary_down {
-        if let Some(mouse) = pointer_pos {
-            cur = Pos2::new(
-                mouse.x.clamp(item_rect.min.x, item_rect.max.x),
-                mouse.y.clamp(item_rect.min.y, item_rect.max.y),
-            );
-        }
+    if primary_down && let Some(mouse) = pointer_pos {
+        cur = Pos2::new(
+            mouse.x.clamp(item_rect.min.x, item_rect.max.x),
+            mouse.y.clamp(item_rect.min.y, item_rect.max.y),
+        );
     }
 
     // Draw crop rectangle preview
@@ -1085,6 +1080,7 @@ fn handle_cropping(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_export_region(
     ui: &mut Ui,
     primary_pressed: bool,
@@ -1132,10 +1128,8 @@ fn handle_export_region(
 
     // Dragging
     let mut cur = current;
-    if primary_down {
-        if let Some(mouse) = pointer_pos {
-            cur = mouse;
-        }
+    if primary_down && let Some(mouse) = pointer_pos {
+        cur = mouse;
     }
 
     // Draw export rectangle

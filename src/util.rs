@@ -31,12 +31,18 @@ mod tests {
 
     #[test]
     fn decode_no_encoding() {
-        assert_eq!(urlencoding_decode("/home/user/file.png"), "/home/user/file.png");
+        assert_eq!(
+            urlencoding_decode("/home/user/file.png"),
+            "/home/user/file.png"
+        );
     }
 
     #[test]
     fn decode_spaces() {
-        assert_eq!(urlencoding_decode("/home/user/my%20file.png"), "/home/user/my file.png");
+        assert_eq!(
+            urlencoding_decode("/home/user/my%20file.png"),
+            "/home/user/my file.png"
+        );
     }
 
     #[test]

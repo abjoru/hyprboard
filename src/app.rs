@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use eframe::Frame;
-use egui::{CentralPanel, Context, Key, TopBottomPanel, Vec2};
 use crate::board::Board;
 use crate::persistence;
 use crate::recent::RecentFiles;
+use eframe::Frame;
+use egui::{CentralPanel, Context, Key, TopBottomPanel, Vec2};
 
 #[derive(Default, PartialEq)]
 enum PendingAction {
@@ -65,10 +65,8 @@ impl eframe::App for HyprBoardApp {
                 self.board.show(ui);
 
                 let any_click = ui.input(|i| i.pointer.secondary_clicked());
-                if any_click {
-                    if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                        self.context_menu_pos = Some(pos);
-                    }
+                if any_click && let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    self.context_menu_pos = Some(pos);
                 }
             });
 
@@ -81,12 +79,10 @@ impl eframe::App for HyprBoardApp {
         self.handle_autosave();
 
         // Intercept close
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if self.board.is_dirty() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.pending_action = PendingAction::Quit;
-                self.show_unsaved_dialog = true;
-            }
+        if ctx.input(|i| i.viewport().close_requested()) && self.board.is_dirty() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending_action = PendingAction::Quit;
+            self.show_unsaved_dialog = true;
         }
     }
 }
@@ -99,7 +95,11 @@ impl HyprBoardApp {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "untitled".into());
-                let dot = if self.board.is_dirty() { " \u{2022}" } else { "" };
+                let dot = if self.board.is_dirty() {
+                    " \u{2022}"
+                } else {
+                    ""
+                };
                 format!("HyprBoard \u{2014} {name}{dot}")
             }
             None => {
@@ -115,9 +115,8 @@ impl HyprBoardApp {
 
     fn handle_global_shortcuts(&mut self, ctx: &Context) {
         let save = ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::S));
-        let save_as = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::S)
-        });
+        let save_as = ctx
+            .input_mut(|i| i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::S));
         let open = ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::O));
         let toggle_toolbar = ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::T));
 
@@ -183,7 +182,10 @@ impl HyprBoardApp {
 
     fn do_open(&mut self, ctx: &Context) {
         let files = rfd::FileDialog::new()
-            .add_filter("All Supported", &["hboard", "bee", "png", "jpg", "jpeg", "bmp", "gif", "webp"])
+            .add_filter(
+                "All Supported",
+                &["hboard", "bee", "png", "jpg", "jpeg", "bmp", "gif", "webp"],
+            )
             .add_filter("HyprBoard Files", &["hboard"])
             .add_filter("BeeRef Files", &["bee"])
             .add_filter("Images", &["png", "jpg", "jpeg", "bmp", "gif", "webp"])
@@ -358,13 +360,22 @@ impl HyprBoardApp {
                 let has_sel = self.board.has_selection();
 
                 ui.add_enabled(has_sel, egui::Button::new("Crop"));
-                if ui.add_enabled(has_sel, egui::Button::new("Flip H")).clicked() {
+                if ui
+                    .add_enabled(has_sel, egui::Button::new("Flip H"))
+                    .clicked()
+                {
                     self.board.flip_selected(true);
                 }
-                if ui.add_enabled(has_sel, egui::Button::new("Flip V")).clicked() {
+                if ui
+                    .add_enabled(has_sel, egui::Button::new("Flip V"))
+                    .clicked()
+                {
                     self.board.flip_selected(false);
                 }
-                if ui.add_enabled(has_sel, egui::Button::new("Grayscale")).clicked() {
+                if ui
+                    .add_enabled(has_sel, egui::Button::new("Grayscale"))
+                    .clicked()
+                {
                     self.board.grayscale_selected();
                 }
 
@@ -437,10 +448,15 @@ impl HyprBoardApp {
                                     .file_name()
                                     .map(|n| n.to_string_lossy().to_string())
                                     .unwrap_or_else(|| path.display().to_string());
-                                if ui.button(&label).on_hover_text(path.display().to_string()).clicked() {
+                                if ui
+                                    .button(&label)
+                                    .on_hover_text(path.display().to_string())
+                                    .clicked()
+                                {
                                     ui.close();
                                     let path = path.clone();
-                                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                    let ext =
+                                        path.extension().and_then(|e| e.to_str()).unwrap_or("");
                                     match ext {
                                         "hboard" => self.load_board(ctx, &path),
                                         "bee" => self.import_bee(&path),
@@ -479,18 +495,12 @@ impl HyprBoardApp {
 
                     let has_sel = self.board.has_selection();
 
-                    if ui
-                        .add_enabled(has_sel, egui::Button::new("Copy"))
-                        .clicked()
-                    {
+                    if ui.add_enabled(has_sel, egui::Button::new("Copy")).clicked() {
                         ui.close();
                         self.board.copy_selected();
                     }
 
-                    if ui
-                        .add_enabled(has_sel, egui::Button::new("Cut"))
-                        .clicked()
-                    {
+                    if ui.add_enabled(has_sel, egui::Button::new("Cut")).clicked() {
                         ui.close();
                         self.board.cut_selection();
                     }
@@ -504,7 +514,10 @@ impl HyprBoardApp {
                     }
 
                     if ui
-                        .add_enabled(has_sel, egui::Button::new("Delete Selected").shortcut_text("Del"))
+                        .add_enabled(
+                            has_sel,
+                            egui::Button::new("Delete Selected").shortcut_text("Del"),
+                        )
                         .clicked()
                     {
                         ui.close();
@@ -513,7 +526,11 @@ impl HyprBoardApp {
                 });
 
                 ui.menu_button("View", |ui| {
-                    let toolbar_label = if self.show_toolbar { "Hide Toolbar" } else { "Show Toolbar" };
+                    let toolbar_label = if self.show_toolbar {
+                        "Hide Toolbar"
+                    } else {
+                        "Show Toolbar"
+                    };
                     if ui
                         .add(egui::Button::new(toolbar_label).shortcut_text("Ctrl+T"))
                         .clicked()
@@ -524,7 +541,11 @@ impl HyprBoardApp {
 
                     ui.separator();
 
-                    let grid_label = if self.board.show_grid { "Hide Grid" } else { "Show Grid" };
+                    let grid_label = if self.board.show_grid {
+                        "Hide Grid"
+                    } else {
+                        "Show Grid"
+                    };
                     if ui
                         .add(egui::Button::new(grid_label).shortcut_text("Ctrl+G"))
                         .clicked()
@@ -533,7 +554,11 @@ impl HyprBoardApp {
                         self.board.show_grid = !self.board.show_grid;
                     }
 
-                    let snap_label = if self.board.snap_to_grid { "Disable Snap" } else { "Enable Snap" };
+                    let snap_label = if self.board.snap_to_grid {
+                        "Disable Snap"
+                    } else {
+                        "Enable Snap"
+                    };
                     if ui
                         .add(egui::Button::new(snap_label).shortcut_text("Ctrl+Shift+G"))
                         .clicked()
@@ -649,7 +674,8 @@ impl HyprBoardApp {
             return;
         }
 
-        let drop_pos = ctx.input(|i| i.pointer.latest_pos())
+        let drop_pos = ctx
+            .input(|i| i.pointer.latest_pos())
             .map(|p| self.board.screen_to_scene(p))
             .unwrap_or_else(|| {
                 let vr = self.board.visible_rect();
@@ -657,7 +683,9 @@ impl HyprBoardApp {
             });
 
         for file in dropped {
-            let path_str = file.path.as_ref()
+            let path_str = file
+                .path
+                .as_ref()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
 
@@ -668,7 +696,9 @@ impl HyprBoardApp {
                 continue;
             }
 
-            let ext = file.path.as_ref()
+            let ext = file
+                .path
+                .as_ref()
                 .and_then(|p| p.extension())
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
@@ -688,10 +718,10 @@ impl HyprBoardApp {
                 _ => {
                     if let Some(bytes) = file.bytes {
                         self.board.add_image_from_bytes(ctx, &bytes, drop_pos);
-                    } else if let Some(path) = file.path {
-                        if let Ok(bytes) = std::fs::read(&path) {
-                            self.board.add_image_from_bytes(ctx, &bytes, drop_pos);
-                        }
+                    } else if let Some(path) = file.path
+                        && let Ok(bytes) = std::fs::read(&path)
+                    {
+                        self.board.add_image_from_bytes(ctx, &bytes, drop_pos);
                     }
                 }
             }

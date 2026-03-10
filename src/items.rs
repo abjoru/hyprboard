@@ -119,7 +119,9 @@ impl BoardItem {
         if img.texture.is_some() {
             return true;
         }
-        if let Some((tex, size)) = decode_and_load_texture(ctx, name, &img.original_bytes, img.grayscale) {
+        if let Some((tex, size)) =
+            decode_and_load_texture(ctx, name, &img.original_bytes, img.grayscale)
+        {
             img.original_size = size;
             img.texture = Some(tex);
             return true;
@@ -144,9 +146,7 @@ impl BoardItem {
     pub fn display_size(&self) -> Vec2 {
         match self {
             Self::Image(img) => {
-                let base = img.crop_rect
-                    .map(|r| r.size())
-                    .unwrap_or(img.original_size);
+                let base = img.crop_rect.map(|r| r.size()).unwrap_or(img.original_size);
                 base * img.transform.scale
             }
             Self::Text(txt) => {
@@ -242,22 +242,21 @@ impl BoardItem {
         let Self::Image(img) = self else { return };
         img.grayscale = !img.grayscale;
         // Re-decode and rebuild texture (only if already decoded)
-        if let Some(tex) = &mut img.texture {
-            if let Some(img_data) = image::load_from_memory(&img.original_bytes).ok() {
-                let rgba = if img.grayscale {
-                    img_data.grayscale().to_rgba8()
-                } else {
-                    img_data.to_rgba8()
-                };
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                let pixels = rgba.into_raw();
-                let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-                img.original_size = Vec2::new(size[0] as f32, size[1] as f32);
-                tex.set(color_image, egui::TextureOptions::LINEAR);
-            }
+        if let Some(tex) = &mut img.texture
+            && let Ok(img_data) = image::load_from_memory(&img.original_bytes)
+        {
+            let rgba = if img.grayscale {
+                img_data.grayscale().to_rgba8()
+            } else {
+                img_data.to_rgba8()
+            };
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let pixels = rgba.into_raw();
+            let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
+            img.original_size = Vec2::new(size[0] as f32, size[1] as f32);
+            tex.set(color_image, egui::TextureOptions::LINEAR);
         }
     }
-
 }
 
 fn decode_and_load_texture(

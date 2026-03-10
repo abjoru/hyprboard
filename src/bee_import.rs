@@ -66,8 +66,7 @@ pub fn import_bee(path: &Path) -> Result<Vec<BoardItem>, String> {
                     continue;
                 };
 
-                let original_size = image_dimensions(&bytes)
-                    .unwrap_or(Vec2::new(100.0, 100.0));
+                let original_size = image_dimensions(&bytes).unwrap_or(Vec2::new(100.0, 100.0));
 
                 // BeeRef: uniform scale -> Vec2::splat
                 let scale_val = row.scale.unwrap_or(1.0) as f32;
@@ -76,7 +75,7 @@ pub fn import_bee(path: &Path) -> Result<Vec<BoardItem>, String> {
                 let rotation_rad = rotation_deg.to_radians();
 
                 // Check for flip in props (scale -1 means flip)
-                let flip_h = props.flip.map_or(false, |f| f < 0.0);
+                let flip_h = props.flip.is_some_and(|f| f < 0.0);
 
                 let crop_rect = props.crop.as_ref().and_then(|crop| {
                     if crop.len() == 4 {

@@ -30,7 +30,10 @@ pub fn draw_grid(ui: &mut Ui, visible_rect: Rect, grid_size: f32) {
     let mut x = start_x;
     while x <= visible_rect.max.x {
         shapes.push(egui::Shape::line_segment(
-            [Pos2::new(x, visible_rect.min.y), Pos2::new(x, visible_rect.max.y)],
+            [
+                Pos2::new(x, visible_rect.min.y),
+                Pos2::new(x, visible_rect.max.y),
+            ],
             stroke,
         ));
         x += grid_size;
@@ -41,7 +44,10 @@ pub fn draw_grid(ui: &mut Ui, visible_rect: Rect, grid_size: f32) {
     let mut y = start_y;
     while y <= visible_rect.max.y {
         shapes.push(egui::Shape::line_segment(
-            [Pos2::new(visible_rect.min.x, y), Pos2::new(visible_rect.max.x, y)],
+            [
+                Pos2::new(visible_rect.min.x, y),
+                Pos2::new(visible_rect.max.x, y),
+            ],
             stroke,
         ));
         y += grid_size;
@@ -74,12 +80,12 @@ pub fn draw_selection_handles(
         let handle_rect = Rect::from_center_size(pos, Vec2::splat(HANDLE_SIZE));
         ui.painter().rect_filled(handle_rect, 1.0, SELECTION_COLOR);
 
-        if let Some(p) = pointer_pos {
-            if handle_rect.expand(4.0).contains(p) {
-                ui.ctx().set_cursor_icon(CursorIcon::ResizeNwSe);
-                if hit.is_none() {
-                    hit = Some(HandleHit::Resize(corner));
-                }
+        if let Some(p) = pointer_pos
+            && handle_rect.expand(4.0).contains(p)
+        {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeNwSe);
+            if hit.is_none() {
+                hit = Some(HandleHit::Resize(corner));
             }
         }
     }
@@ -95,11 +101,11 @@ pub fn draw_selection_handles(
     ui.painter()
         .circle_filled(rot_pos, HANDLE_SIZE / 2.0, SELECTION_COLOR);
 
-    if let Some(p) = pointer_pos {
-        if rot_rect.expand(4.0).contains(p) {
-            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
-            hit = Some(HandleHit::Rotate);
-        }
+    if let Some(p) = pointer_pos
+        && rot_rect.expand(4.0).contains(p)
+    {
+        ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+        hit = Some(HandleHit::Rotate);
     }
 
     hit
@@ -197,10 +203,7 @@ pub fn draw_item(ui: &mut Ui, item: &BoardItem, is_selected: bool) {
                 mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
                 ui.painter().add(egui::Shape::mesh(mesh));
             } else {
-                let uv = Rect::from_min_max(
-                    egui::pos2(u_min, v_min),
-                    egui::pos2(u_max, v_max),
-                );
+                let uv = Rect::from_min_max(egui::pos2(u_min, v_min), egui::pos2(u_max, v_max));
                 let mut mesh = egui::Mesh::with_texture(texture.id());
                 mesh.add_rect_with_uv(rect, uv, tint);
                 ui.painter().add(egui::Shape::mesh(mesh));

@@ -182,9 +182,7 @@ impl UndoStack {
             }
             Command::Add { count } => {
                 let start = items.len().saturating_sub(*count);
-                let removed: Vec<_> = (start..items.len())
-                    .zip(items.drain(start..))
-                    .collect();
+                let removed: Vec<_> = (start..items.len()).zip(items.drain(start..)).collect();
                 selected.clear();
                 Command::Delete { items: removed }
             }
@@ -277,13 +275,19 @@ impl UndoStack {
             }
             Command::AddLabel { item_idx } => {
                 let Some(item) = items.get_mut(*item_idx) else {
-                    return Command::AddLabel { item_idx: *item_idx };
+                    return Command::AddLabel {
+                        item_idx: *item_idx,
+                    };
                 };
                 let Some(labels) = item.labels_mut() else {
-                    return Command::AddLabel { item_idx: *item_idx };
+                    return Command::AddLabel {
+                        item_idx: *item_idx,
+                    };
                 };
                 let Some(label) = labels.pop() else {
-                    return Command::AddLabel { item_idx: *item_idx };
+                    return Command::AddLabel {
+                        item_idx: *item_idx,
+                    };
                 };
                 let label_count = items[*item_idx].labels().len();
                 Command::DeleteLabel {
@@ -297,10 +301,10 @@ impl UndoStack {
                 label_idx,
                 label,
             } => {
-                if let Some(item) = items.get_mut(*item_idx) {
-                    if let Some(labels) = item.labels_mut() {
-                        labels.insert(*label_idx, label.clone());
-                    }
+                if let Some(item) = items.get_mut(*item_idx)
+                    && let Some(labels) = item.labels_mut()
+                {
+                    labels.insert(*label_idx, label.clone());
                 }
                 Command::AddLabel {
                     item_idx: *item_idx,
@@ -312,12 +316,11 @@ impl UndoStack {
                 old_offset,
                 new_offset,
             } => {
-                if let Some(item) = items.get_mut(*item_idx) {
-                    if let Some(labels) = item.labels_mut() {
-                        if let Some(label) = labels.get_mut(*label_idx) {
-                            label.offset = *old_offset;
-                        }
-                    }
+                if let Some(item) = items.get_mut(*item_idx)
+                    && let Some(labels) = item.labels_mut()
+                    && let Some(label) = labels.get_mut(*label_idx)
+                {
+                    label.offset = *old_offset;
                 }
                 Command::MoveLabel {
                     item_idx: *item_idx,
@@ -332,12 +335,11 @@ impl UndoStack {
                 old_text,
                 new_text,
             } => {
-                if let Some(item) = items.get_mut(*item_idx) {
-                    if let Some(labels) = item.labels_mut() {
-                        if let Some(label) = labels.get_mut(*label_idx) {
-                            label.text = old_text.clone();
-                        }
-                    }
+                if let Some(item) = items.get_mut(*item_idx)
+                    && let Some(labels) = item.labels_mut()
+                    && let Some(label) = labels.get_mut(*label_idx)
+                {
+                    label.text = old_text.clone();
                 }
                 Command::EditLabel {
                     item_idx: *item_idx,

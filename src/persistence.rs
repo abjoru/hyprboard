@@ -52,9 +52,7 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 
 fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Check if img_width column exists
-    let has_img_width: bool = conn
-        .prepare("SELECT img_width FROM items LIMIT 0")
-        .is_ok();
+    let has_img_width: bool = conn.prepare("SELECT img_width FROM items LIMIT 0").is_ok();
 
     if !has_img_width {
         conn.execute_batch(
@@ -112,7 +110,8 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
         for (z_order, item) in items.iter().enumerate() {
             match item {
                 BoardItem::Image(img) => {
-                    let (cx, cy, cw, ch) = img.crop_rect
+                    let (cx, cy, cw, ch) = img
+                        .crop_rect
                         .map(|r| {
                             (
                                 Some(r.min.x as f64),
@@ -167,7 +166,10 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
                 }
                 BoardItem::Text(txt) => {
                     let color_u32 = u32::from_be_bytes([
-                        txt.color.r(), txt.color.g(), txt.color.b(), txt.color.a(),
+                        txt.color.r(),
+                        txt.color.g(),
+                        txt.color.b(),
+                        txt.color.a(),
                     ]);
                     stmt.execute(params![
                         z_order as i64,
@@ -197,17 +199,13 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
         }
     }
 
-    std::fs::rename(&tmp_path, path).map_err(|e| {
-        rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-    })?;
+    std::fs::rename(&tmp_path, path)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
     Ok(())
 }
 
-pub fn load_board(
-    path: &Path,
-    _ctx: &egui::Context,
-) -> rusqlite::Result<Vec<BoardItem>> {
+pub fn load_board(path: &Path, _ctx: &egui::Context) -> rusqlite::Result<Vec<BoardItem>> {
     let conn = Connection::open(path)?;
 
     // Migrate if needed
@@ -326,9 +324,8 @@ pub fn load_board(
                 let font_size = row.font_size.unwrap_or(16.0) as f32;
                 let color_u32 = row.color.unwrap_or(0xFFFFFFFF) as u32;
                 let bytes = color_u32.to_be_bytes();
-                let color = egui::Color32::from_rgba_unmultiplied(
-                    bytes[0], bytes[1], bytes[2], bytes[3],
-                );
+                let color =
+                    egui::Color32::from_rgba_unmultiplied(bytes[0], bytes[1], bytes[2], bytes[3]);
 
                 items.push(BoardItem::Text(TextItem {
                     content,
@@ -379,11 +376,8 @@ mod tests {
             *pixel = image::Rgba([255, 0, 0, 255]);
         }
         let mut buf = Vec::new();
-        img.write_to(
-            &mut std::io::Cursor::new(&mut buf),
-            image::ImageFormat::Png,
-        )
-        .unwrap();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
         buf
     }
 

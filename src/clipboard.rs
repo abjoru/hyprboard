@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use image::{imageops, RgbaImage};
+use image::{RgbaImage, imageops};
 
 use crate::items::BoardItem;
 
@@ -42,8 +42,7 @@ pub fn ensure_png(original_bytes: &[u8]) -> Result<Vec<u8>, String> {
         return Ok(original_bytes.to_vec());
     }
     // Re-encode as PNG
-    let img = image::load_from_memory(original_bytes)
-        .map_err(|e| format!("decode: {e}"))?;
+    let img = image::load_from_memory(original_bytes).map_err(|e| format!("decode: {e}"))?;
     let mut buf = Vec::new();
     let mut cursor = std::io::Cursor::new(&mut buf);
     img.write_to(&mut cursor, image::ImageFormat::Png)
@@ -125,6 +124,7 @@ fn render_item(item: &BoardItem, scale_factor: f32) -> Result<RgbaImage, String>
 }
 
 /// Core image transform pipeline — decoupled from BoardItem for testability.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_transforms(
     image_bytes: &[u8],
     original_size: egui::Vec2,
@@ -136,8 +136,7 @@ pub fn apply_transforms(
     flip_v: bool,
     scale_factor: f32,
 ) -> Result<RgbaImage, String> {
-    let img = image::load_from_memory(image_bytes)
-        .map_err(|e| format!("decode: {e}"))?;
+    let img = image::load_from_memory(image_bytes).map_err(|e| format!("decode: {e}"))?;
 
     let mut rgba = if grayscale {
         img.grayscale().to_rgba8()
@@ -165,9 +164,7 @@ pub fn apply_transforms(
     }
 
     // Scale to display size * scale_factor
-    let base_size = crop_rect
-        .map(|r| r.size())
-        .unwrap_or(original_size);
+    let base_size = crop_rect.map(|r| r.size()).unwrap_or(original_size);
     let display_w = (base_size.x * transform.scale.x * scale_factor).round() as u32;
     let display_h = (base_size.y * transform.scale.y * scale_factor).round() as u32;
 
@@ -263,9 +260,14 @@ mod tests {
             &png,
             Vec2::new(10.0, 10.0),
             &transform,
-            None, 1.0, false, false, false,
+            None,
             1.0,
-        ).unwrap();
+            false,
+            false,
+            false,
+            1.0,
+        )
+        .unwrap();
         assert_eq!(result.width(), 10);
         assert_eq!(result.height(), 10);
         for pixel in result.pixels() {
@@ -278,15 +280,22 @@ mod tests {
     #[test]
     fn transforms_scale_2x() {
         let png = make_test_png(10, 10);
-        let mut transform = Transform::default();
-        transform.scale = Vec2::splat(2.0);
+        let transform = Transform {
+            scale: Vec2::splat(2.0),
+            ..Transform::default()
+        };
         let result = apply_transforms(
             &png,
             Vec2::new(10.0, 10.0),
             &transform,
-            None, 1.0, false, false, false,
+            None,
             1.0,
-        ).unwrap();
+            false,
+            false,
+            false,
+            1.0,
+        )
+        .unwrap();
         assert_eq!(result.width(), 20);
         assert_eq!(result.height(), 20);
     }
@@ -299,9 +308,14 @@ mod tests {
             &png,
             Vec2::new(10.0, 10.0),
             &transform,
-            None, 1.0, false, false, false,
+            None,
+            1.0,
+            false,
+            false,
+            false,
             2.0,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.width(), 20);
         assert_eq!(result.height(), 20);
     }
@@ -317,9 +331,14 @@ mod tests {
             &png,
             Vec2::new(10.0, 10.0),
             &transform,
-            Some(crop), 1.0, false, false, false,
+            Some(crop),
             1.0,
-        ).unwrap();
+            false,
+            false,
+            false,
+            1.0,
+        )
+        .unwrap();
         assert_eq!(result.width(), 6);
         assert_eq!(result.height(), 4);
     }
@@ -332,16 +351,22 @@ mod tests {
         img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
         img.put_pixel(1, 0, image::Rgba([0, 0, 255, 255]));
         let mut buf = Vec::new();
-        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png).unwrap();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
 
         let transform = Transform::default();
         let result = apply_transforms(
             &buf,
             Vec2::new(2.0, 1.0),
             &transform,
-            None, 1.0, false, true, false,
+            None,
             1.0,
-        ).unwrap();
+            false,
+            true,
+            false,
+            1.0,
+        )
+        .unwrap();
         assert_eq!(result.get_pixel(0, 0).0, [0, 0, 255, 255]);
         assert_eq!(result.get_pixel(1, 0).0, [255, 0, 0, 255]);
     }
@@ -352,16 +377,22 @@ mod tests {
         img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
         img.put_pixel(0, 1, image::Rgba([0, 0, 255, 255]));
         let mut buf = Vec::new();
-        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png).unwrap();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
 
         let transform = Transform::default();
         let result = apply_transforms(
             &buf,
             Vec2::new(1.0, 2.0),
             &transform,
-            None, 1.0, false, false, true,
+            None,
             1.0,
-        ).unwrap();
+            false,
+            false,
+            true,
+            1.0,
+        )
+        .unwrap();
         assert_eq!(result.get_pixel(0, 0).0, [0, 0, 255, 255]);
         assert_eq!(result.get_pixel(0, 1).0, [255, 0, 0, 255]);
     }
@@ -376,9 +407,14 @@ mod tests {
             &png,
             Vec2::new(4.0, 4.0),
             &transform,
-            None, 1.0, true, false, false,
+            None,
             1.0,
-        ).unwrap();
+            true,
+            false,
+            false,
+            1.0,
+        )
+        .unwrap();
         let p = result.get_pixel(0, 0).0;
         assert_eq!(p[0], p[1]);
         assert_eq!(p[1], p[2]);
@@ -395,9 +431,14 @@ mod tests {
             &png,
             Vec2::new(4.0, 4.0),
             &transform,
-            None, 0.5, false, false, false,
+            None,
+            0.5,
+            false,
+            false,
+            false,
             1.0,
-        ).unwrap();
+        )
+        .unwrap();
         let p = result.get_pixel(0, 0).0;
         assert!((p[3] as i16 - 127).unsigned_abs() <= 1);
         assert_eq!(p[0], 255);
@@ -411,9 +452,14 @@ mod tests {
             &png,
             Vec2::new(4.0, 4.0),
             &transform,
-            None, 0.0, false, false, false,
+            None,
+            0.0,
+            false,
+            false,
+            false,
             1.0,
-        ).unwrap();
+        )
+        .unwrap();
         for pixel in result.pixels() {
             assert_eq!(pixel.0[3], 0);
         }
@@ -424,15 +470,22 @@ mod tests {
     #[test]
     fn transforms_rotation_preserves_size() {
         let png = make_test_png(10, 10);
-        let mut transform = Transform::default();
-        transform.rotation = std::f32::consts::FRAC_PI_4;
+        let transform = Transform {
+            rotation: std::f32::consts::FRAC_PI_4,
+            ..Transform::default()
+        };
         let result = apply_transforms(
             &png,
             Vec2::new(10.0, 10.0),
             &transform,
-            None, 1.0, false, false, false,
+            None,
             1.0,
-        ).unwrap();
+            false,
+            false,
+            false,
+            1.0,
+        )
+        .unwrap();
         assert_eq!(result.width(), 10);
         assert_eq!(result.height(), 10);
         let center = result.get_pixel(5, 5).0;
@@ -447,16 +500,23 @@ mod tests {
     #[test]
     fn transforms_crop_then_scale() {
         let png = make_test_png(20, 20);
-        let mut transform = Transform::default();
-        transform.scale = Vec2::splat(0.5);
+        let transform = Transform {
+            scale: Vec2::splat(0.5),
+            ..Transform::default()
+        };
         let crop = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(10.0, 10.0));
         let result = apply_transforms(
             &png,
             Vec2::new(20.0, 20.0),
             &transform,
-            Some(crop), 1.0, false, false, false,
+            Some(crop),
             1.0,
-        ).unwrap();
+            false,
+            false,
+            false,
+            1.0,
+        )
+        .unwrap();
         assert_eq!(result.width(), 5);
         assert_eq!(result.height(), 5);
     }
@@ -468,7 +528,11 @@ mod tests {
             b"garbage",
             Vec2::new(10.0, 10.0),
             &transform,
-            None, 1.0, false, false, false,
+            None,
+            1.0,
+            false,
+            false,
+            false,
             1.0,
         );
         assert!(result.is_err());
