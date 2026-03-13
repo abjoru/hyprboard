@@ -32,6 +32,7 @@ pub struct Board {
     download_tx: mpsc::Sender<(Vec<u8>, Vec2)>,
     download_rx: mpsc::Receiver<(Vec<u8>, Vec2)>,
     pending_export: Option<Vec<u8>>,
+    pub suppress_input: bool,
 }
 
 impl Default for Board {
@@ -52,6 +53,7 @@ impl Default for Board {
             download_tx,
             download_rx,
             pending_export: None,
+            suppress_input: false,
         }
     }
 }
@@ -479,6 +481,7 @@ impl Board {
         let widget_rect = &mut self.widget_rect;
         let next_texture_id = &mut self.next_texture_id;
         let pending_export = &mut self.pending_export;
+        let suppress_input = self.suppress_input;
 
         *widget_rect = ui.max_rect();
 
@@ -500,6 +503,7 @@ impl Board {
                     *visible_rect,
                     next_texture_id,
                     pending_export,
+                    suppress_input,
                 );
             });
     }
@@ -645,6 +649,22 @@ impl Board {
 
     pub fn has_selection(&self) -> bool {
         !self.selected.is_empty()
+    }
+
+    /// Select the topmost item at `screen_pos`, replacing existing selection.
+    /// Returns true if an item was found and selected.
+    pub fn select_at(&mut self, screen_pos: egui::Pos2) -> bool {
+        let scene_pos = self.screen_to_scene(screen_pos);
+        for (idx, item) in self.items.iter().enumerate().rev() {
+            if item.bounding_rect().contains(scene_pos.to_pos2()) {
+                if !self.selected.contains(&idx) {
+                    self.selected.clear();
+                    self.selected.insert(idx);
+                }
+                return true;
+            }
+        }
+        false
     }
 
     pub fn items(&self) -> &[BoardItem] {

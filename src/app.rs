@@ -59,6 +59,8 @@ impl eframe::App for HyprBoardApp {
             self.show_toolbar(ctx);
         }
 
+        self.board.suppress_input = self.context_menu_pos.is_some();
+
         CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(30)))
             .show(ctx, |ui| {
@@ -66,6 +68,7 @@ impl eframe::App for HyprBoardApp {
 
                 let any_click = ui.input(|i| i.pointer.secondary_clicked());
                 if any_click && let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    self.board.select_at(pos);
                     self.context_menu_pos = Some(pos);
                 }
             });
@@ -599,6 +602,7 @@ impl HyprBoardApp {
         };
 
         let menu_id = egui::Id::new("canvas_context_menu");
+        let mut close = false;
 
         let area_resp = egui::Area::new(menu_id)
             .fixed_pos(pos)
@@ -606,64 +610,145 @@ impl HyprBoardApp {
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_min_width(120.0);
+                    ui.set_min_width(140.0);
 
-                    if ui.button("Undo").clicked() {
-                        self.board.undo();
-                        self.context_menu_pos = None;
-                    }
-                    if ui.button("Redo").clicked() {
-                        self.board.redo();
-                        self.context_menu_pos = None;
-                    }
-
-                    ui.separator();
-
-                    if ui.button("Paste").clicked() {
-                        self.board.paste_from_clipboard(ctx);
-                        self.context_menu_pos = None;
-                    }
-                    if ui.button("Open...").clicked() {
-                        self.try_open(ctx);
-                        self.context_menu_pos = None;
-                    }
                     if self.board.has_selection() {
-                        ui.separator();
+                        // Selection context menu (flat)
                         if ui.button("Copy").clicked() {
                             self.board.copy_selected();
-                            self.context_menu_pos = None;
+                            close = true;
                         }
                         if ui.button("Cut").clicked() {
                             self.board.cut_selection();
-                            self.context_menu_pos = None;
+                            close = true;
                         }
-                        if ui.button("Add Label").clicked() {
-                            self.board.add_label_to_selected();
-                            self.context_menu_pos = None;
+                        if ui.button("Paste").clicked() {
+                            self.board.paste_from_clipboard(ctx);
+                            close = true;
                         }
                         if ui.button("Delete").clicked() {
                             self.board.delete_selected();
-                            self.context_menu_pos = None;
+                            close = true;
                         }
-                    }
 
-                    ui.separator();
+                        ui.separator();
 
-                    if ui.button("Export Region...").clicked() {
-                        self.board.start_export_region();
-                        self.context_menu_pos = None;
-                    }
+                        if ui.button("Add Label").clicked() {
+                            self.board.add_label_to_selected();
+                            close = true;
+                        }
 
-                    ui.separator();
+                        ui.separator();
 
-                    if ui.button("Quit").clicked() {
-                        self.context_menu_pos = None;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        if ui.button("Quit").clicked() {
+                            close = true;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    } else {
+                        // Background context menu — mirrors File menu
+                        if ui
+                            .add(egui::Button::new("Open...").shortcut_text("Ctrl+O"))
+                            .clicked()
+                        {
+                            close = true;
+                            self.try_open(ctx);
+                        }
+
+                        if ui.button("Import .bee...").clicked() {
+                            close = true;
+                            let file = rfd::FileDialog::new()
+                                .add_filter("BeeRef Files", &["bee"])
+                                .pick_file();
+                            if let Some(path) = file {
+                                self.import_bee(&path);
+                            }
+                        }
+
+                        ui.separator();
+
+                        if ui
+                            .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
+                            .clicked()
+                        {
+                            close = true;
+                            self.save();
+                        }
+
+                        if ui
+                            .add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S"))
+                            .clicked()
+                        {
+                            close = true;
+                            self.save_as();
+                        }
+
+                        ui.separator();
+
+                        if ui
+                            .add(egui::Button::new("Export Region...").shortcut_text("Ctrl+E"))
+                            .clicked()
+                        {
+                            close = true;
+                            self.board.start_export_region();
+                        }
+
+                        if ui
+                            .add(egui::Button::new("Paste").shortcut_text("Ctrl+V"))
+                            .clicked()
+                        {
+                            close = true;
+                            self.board.paste_from_clipboard(ctx);
+                        }
+
+                        ui.separator();
+
+                        let recent: Vec<PathBuf> = self.recent_files.entries().to_vec();
+                        if !recent.is_empty() {
+                            ui.menu_button("Recent Files", |ui| {
+                                for path in &recent {
+                                    let label = path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| path.display().to_string());
+                                    if ui
+                                        .button(&label)
+                                        .on_hover_text(path.display().to_string())
+                                        .clicked()
+                                    {
+                                        ui.close();
+                                        close = true;
+                                        let path = path.clone();
+                                        let ext =
+                                            path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                        match ext {
+                                            "hboard" => self.load_board(ctx, &path),
+                                            "bee" => self.import_bee(&path),
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            });
+
+                            ui.separator();
+                        }
+
+                        if ui.button("Quit").clicked() {
+                            close = true;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     }
                 });
             });
 
-        if area_resp.response.clicked_elsewhere() || ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if close {
+            self.context_menu_pos = None;
+            return;
+        }
+
+        let primary_elsewhere = ctx
+            .input(|i| i.pointer.button_clicked(egui::PointerButton::Primary))
+            && !area_resp.response.contains_pointer();
+        if primary_elsewhere || ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.context_menu_pos = None;
         }
     }

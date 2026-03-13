@@ -130,19 +130,24 @@ pub fn render_scene(
     visible_rect: Rect,
     next_texture_id: &mut u64,
     pending_export: &mut Option<Vec<u8>>,
+    suppress_input: bool,
 ) {
-    let pointer_pos = ui
-        .ctx()
-        .pointer_interact_pos()
-        .map(|p| screen_to_scene(ui, p));
-    let primary_down = ui.input(|i| i.pointer.primary_down());
-    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
-    let primary_released = ui.input(|i| i.pointer.primary_released());
-    let shift_held = ui.input(|i| i.modifiers.shift);
-    let double_clicked = ui.input(|i| {
-        i.pointer
-            .button_double_clicked(egui::PointerButton::Primary)
-    });
+    let pointer_pos = if suppress_input {
+        None
+    } else {
+        ui.ctx()
+            .pointer_interact_pos()
+            .map(|p| screen_to_scene(ui, p))
+    };
+    let primary_down = !suppress_input && ui.input(|i| i.pointer.primary_down());
+    let primary_pressed = !suppress_input && ui.input(|i| i.pointer.primary_pressed());
+    let primary_released = !suppress_input && ui.input(|i| i.pointer.primary_released());
+    let shift_held = !suppress_input && ui.input(|i| i.modifiers.shift);
+    let double_clicked = !suppress_input
+        && ui.input(|i| {
+            i.pointer
+                .button_double_clicked(egui::PointerButton::Primary)
+        });
 
     // Expanded visible rect for handle culling
     let cull_rect = visible_rect.expand(HANDLE_SIZE + ROT_HANDLE_OFFSET);
