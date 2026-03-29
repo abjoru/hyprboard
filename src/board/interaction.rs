@@ -225,15 +225,30 @@ pub fn render_scene(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    // Global double-click: zoom to fit (empty canvas) or zoom to image
-    if double_clicked && hovered_item.is_none() && hovered_label.is_none() {
-        let rects = items.iter().map(|item| item.bounding_rect());
-        if let Some(first) = rects.clone().next() {
-            let all = rects.fold(first, |acc, r| acc.union(r));
-            *pending_zoom = Some(all.expand(50.0));
+    // Global double-click: edit label, or zoom to fit (skip during editing)
+    let editing = matches!(
+        interaction,
+        InteractionState::EditingText { .. } | InteractionState::EditingLabel { .. }
+    );
+    if double_clicked && !editing {
+        if let Some((item_idx, label_idx)) = hovered_label {
+            selected.clear();
+            selected.insert(item_idx);
+            *interaction = InteractionState::EditingLabel {
+                item_idx,
+                label_idx,
+            };
+            return;
         }
-        *interaction = InteractionState::Idle;
-        return;
+        if hovered_item.is_none() {
+            let rects = items.iter().map(|item| item.bounding_rect());
+            if let Some(first) = rects.clone().next() {
+                let all = rects.fold(first, |acc, r| acc.union(r));
+                *pending_zoom = Some(all.expand(50.0));
+            }
+            *interaction = InteractionState::Idle;
+            return;
+        }
     }
 
     // State machine

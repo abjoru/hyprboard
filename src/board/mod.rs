@@ -559,6 +559,13 @@ impl Board {
     }
 
     pub fn handle_input(&mut self, ctx: &egui::Context) {
+        if matches!(
+            self.interaction,
+            InteractionState::EditingText { .. } | InteractionState::EditingLabel { .. }
+        ) {
+            return;
+        }
+
         let do_delete = ctx.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace));
         if do_delete {
             self.delete_selected();
