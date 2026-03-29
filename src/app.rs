@@ -25,6 +25,7 @@ pub struct HyprBoardApp {
     show_unsaved_dialog: bool,
     recent_files: RecentFiles,
     show_toolbar: bool,
+    last_title: String,
 }
 
 impl Default for HyprBoardApp {
@@ -38,6 +39,7 @@ impl Default for HyprBoardApp {
             show_unsaved_dialog: false,
             recent_files: RecentFiles::load(),
             show_toolbar: true,
+            last_title: String::new(),
         }
     }
 }
@@ -92,7 +94,7 @@ impl eframe::App for HyprBoardApp {
 }
 
 impl HyprBoardApp {
-    fn update_title(&self, ctx: &Context) {
+    fn update_title(&mut self, ctx: &Context) {
         let title = match &self.current_file {
             Some(path) => {
                 let name = path
@@ -114,7 +116,10 @@ impl HyprBoardApp {
                 }
             }
         };
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        if title != self.last_title {
+            self.last_title = title.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
     }
 
     fn handle_global_shortcuts(&mut self, ctx: &Context) {
@@ -251,7 +256,7 @@ impl HyprBoardApp {
         let autosave_path = file.with_extension("hboard.autosave");
         match persistence::save_board(&autosave_path, self.board.items()) {
             Ok(()) => {
-                self.last_change = None;
+                self.last_change = Some(Instant::now());
                 log::debug!("Autosaved to {}", autosave_path.display());
             }
             Err(e) => {
@@ -392,7 +397,9 @@ impl HyprBoardApp {
 
                 let has_sel = self.board.has_selection();
 
-                Self::toolbar_btn_enabled(ui, has_sel, Self::icon(CROP), "Crop (C)");
+                if Self::toolbar_btn_enabled(ui, has_sel, Self::icon(CROP), "Crop (C)").clicked() {
+                    self.board.start_crop();
+                }
                 if Self::toolbar_btn_enabled(
                     ui,
                     has_sel,
@@ -725,13 +732,6 @@ impl HyprBoardApp {
                         if ui.button("Add Label").clicked() {
                             self.board.add_label_to_selected();
                             close = true;
-                        }
-
-                        ui.separator();
-
-                        if ui.button("Quit").clicked() {
-                            close = true;
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     } else {
                         // Background context menu — mirrors File menu

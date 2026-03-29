@@ -225,12 +225,15 @@ pub fn render_scene(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    // Global double-click: edit label, or zoom to fit (skip during editing)
-    let editing = matches!(
+    // Global double-click: edit label, or zoom to fit (skip during editing/cropping/exporting)
+    let suppress_dblclick = matches!(
         interaction,
-        InteractionState::EditingText { .. } | InteractionState::EditingLabel { .. }
+        InteractionState::EditingText { .. }
+            | InteractionState::EditingLabel { .. }
+            | InteractionState::Cropping { .. }
+            | InteractionState::ExportingRegion { .. }
     );
-    if double_clicked && !editing {
+    if double_clicked && !suppress_dblclick {
         if let Some((item_idx, label_idx)) = hovered_label {
             selected.clear();
             selected.insert(item_idx);

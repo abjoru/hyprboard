@@ -500,6 +500,23 @@ impl Board {
         self.undo_stack.push(Command::Move { indices, delta });
     }
 
+    pub fn start_crop(&mut self) {
+        if self.selected.len() == 1 {
+            let idx = *self.selected.iter().next().unwrap();
+            if self
+                .items
+                .get(idx)
+                .is_some_and(|item| matches!(item, BoardItem::Image(_)))
+            {
+                self.interaction = InteractionState::Cropping {
+                    idx,
+                    start: None,
+                    current: Pos2::ZERO,
+                };
+            }
+        }
+    }
+
     pub fn start_export_region(&mut self) {
         self.interaction = InteractionState::ExportingRegion {
             start: None,
@@ -626,19 +643,8 @@ impl Board {
             ctx.input(|i| i.key_pressed(Key::C) && i.modifiers.shift && !i.modifiers.ctrl);
         if reset_crop {
             self.reset_crop_selected();
-        } else if crop && self.selected.len() == 1 {
-            let idx = *self.selected.iter().next().unwrap();
-            if self
-                .items
-                .get(idx)
-                .is_some_and(|item| matches!(item, BoardItem::Image(_)))
-            {
-                self.interaction = InteractionState::Cropping {
-                    idx,
-                    start: None,
-                    current: Pos2::ZERO,
-                };
-            }
+        } else if crop {
+            self.start_crop();
         }
 
         // Vim-style movement (only when items selected)
