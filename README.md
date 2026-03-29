@@ -8,7 +8,7 @@
 
 ## Status
 
-![Version](https://img.shields.io/badge/version-0.1.1-blue)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 
 **Beta Release** - A PureRef/BeeRef alternative built with egui + eframe (wgpu/Vulkan backend). Designed for Wayland compositors, especially Hyprland.
