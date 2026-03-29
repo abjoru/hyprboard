@@ -172,6 +172,8 @@ impl HyprBoardApp {
                 self.board.mark_clean();
                 self.last_change = None;
                 self.recent_files.add(path);
+                let autosave = path.with_extension("hboard.autosave");
+                let _ = std::fs::remove_file(autosave);
                 log::info!("Saved to {}", path.display());
             }
             Err(e) => {
@@ -319,12 +321,15 @@ impl HyprBoardApp {
             .show(ctx, |ui| {
                 let mut opacity = self.board.selected_opacity().unwrap_or(1.0);
                 let old_opacity = opacity;
-                ui.horizontal(|ui| {
+                let resp = ui.horizontal(|ui| {
                     ui.label("Opacity");
-                    ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0));
+                    ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0))
                 });
                 if (opacity - old_opacity).abs() > 0.001 {
-                    self.board.set_opacity_selected(opacity);
+                    self.board.apply_opacity_selected(opacity);
+                }
+                if resp.inner.drag_stopped() {
+                    self.board.commit_opacity_selected();
                 }
 
                 ui.separator();

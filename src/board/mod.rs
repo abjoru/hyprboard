@@ -33,6 +33,7 @@ pub struct Board {
     download_rx: mpsc::Receiver<(Vec<u8>, Vec2)>,
     pending_export: Option<Vec<u8>>,
     pending_zoom: Option<Rect>,
+    opacity_drag_start: Option<Vec<(usize, f32)>>,
     pub suppress_input: bool,
 }
 
@@ -55,6 +56,7 @@ impl Default for Board {
             download_rx,
             pending_export: None,
             pending_zoom: None,
+            opacity_drag_start: None,
             suppress_input: false,
         }
     }
@@ -339,14 +341,18 @@ impl Board {
         let mut indices: Vec<usize> = self.selected.iter().copied().collect();
         indices.sort_unstable();
 
+        let mut changed = false;
         for &idx in indices.iter().rev() {
             if idx + 1 < self.items.len() && !self.selected.contains(&(idx + 1)) {
                 self.items.swap(idx, idx + 1);
                 self.selected.remove(&idx);
                 self.selected.insert(idx + 1);
+                changed = true;
             }
         }
-        self.undo_stack.push(Command::ZOrder { old_order });
+        if changed {
+            self.undo_stack.push(Command::ZOrder { old_order });
+        }
     }
 
     fn lower_selected(&mut self) {
@@ -357,36 +363,55 @@ impl Board {
         let mut indices: Vec<usize> = self.selected.iter().copied().collect();
         indices.sort_unstable();
 
+        let mut changed = false;
         for &idx in &indices {
             if idx > 0 && !self.selected.contains(&(idx - 1)) {
                 self.items.swap(idx, idx - 1);
                 self.selected.remove(&idx);
                 self.selected.insert(idx - 1);
+                changed = true;
             }
         }
-        self.undo_stack.push(Command::ZOrder { old_order });
+        if changed {
+            self.undo_stack.push(Command::ZOrder { old_order });
+        }
     }
 
-    pub fn set_opacity_selected(&mut self, new_opacity: f32) {
+    pub fn apply_opacity_selected(&mut self, new_opacity: f32) {
         if self.selected.is_empty() {
             return;
         }
-        let indices: Vec<usize> = self.selected.iter().copied().collect();
-        let old_values: Vec<f32> = indices
-            .iter()
-            .filter_map(|&i| self.items.get(i).map(|item| item.opacity()))
-            .collect();
-        let new_values = vec![new_opacity; indices.len()];
-        for &idx in &indices {
+        if self.opacity_drag_start.is_none() {
+            let start: Vec<(usize, f32)> = self
+                .selected
+                .iter()
+                .filter_map(|&i| self.items.get(i).map(|item| (i, item.opacity())))
+                .collect();
+            self.opacity_drag_start = Some(start);
+        }
+        for &idx in &self.selected {
             if let Some(item) = self.items.get_mut(idx) {
                 item.set_opacity(new_opacity);
             }
         }
-        self.undo_stack.push(Command::Opacity {
-            indices,
-            old_values,
-            new_values,
-        });
+    }
+
+    pub fn commit_opacity_selected(&mut self) {
+        if let Some(start) = self.opacity_drag_start.take() {
+            let indices: Vec<usize> = start.iter().map(|(i, _)| *i).collect();
+            let old_values: Vec<f32> = start.iter().map(|(_, v)| *v).collect();
+            let new_values: Vec<f32> = indices
+                .iter()
+                .filter_map(|&i| self.items.get(i).map(|item| item.opacity()))
+                .collect();
+            if old_values != new_values {
+                self.undo_stack.push(Command::Opacity {
+                    indices,
+                    old_values,
+                    new_values,
+                });
+            }
+        }
     }
 
     pub fn selected_opacity(&self) -> Option<f32> {

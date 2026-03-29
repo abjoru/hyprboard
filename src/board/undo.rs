@@ -354,6 +354,10 @@ impl UndoStack {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use crate::items::Transform;
+
     use super::*;
 
     fn make_test_items() -> Vec<BoardItem> {
@@ -496,5 +500,238 @@ mod tests {
             delta: Vec2::new(1.0, 0.0),
         });
         assert_eq!(stack.redos.len(), 0);
+    }
+
+    fn make_image_item(pos: Vec2, size: Vec2) -> BoardItem {
+        BoardItem::Image(crate::items::ImageItem {
+            texture: None,
+            original_bytes: Arc::from(vec![0u8; 4]),
+            original_size: size,
+            transform: Transform::default().with_position(pos),
+            crop_rect: None,
+            opacity: 1.0,
+            grayscale: false,
+            flip_h: false,
+            flip_v: false,
+            labels: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn undo_resize() {
+        let mut items = vec![make_image_item(
+            Vec2::new(10.0, 10.0),
+            Vec2::new(100.0, 100.0),
+        )];
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        let old_scale = items[0].transform().scale;
+        let old_pos = items[0].transform().position;
+        items[0].transform_mut().scale = Vec2::splat(2.0);
+        items[0].transform_mut().position = Vec2::new(5.0, 5.0);
+
+        stack.push(Command::Resize {
+            indices: vec![0],
+            old_scales: vec![old_scale],
+            new_scales: vec![Vec2::splat(2.0)],
+            old_positions: vec![old_pos],
+            new_positions: vec![Vec2::new(5.0, 5.0)],
+        });
+
+        stack.undo(&mut items, &mut selected);
+        assert_eq!(items[0].transform().scale, Vec2::splat(1.0));
+        assert_eq!(items[0].transform().position, Vec2::new(10.0, 10.0));
+
+        stack.redo(&mut items, &mut selected);
+        assert_eq!(items[0].transform().scale, Vec2::splat(2.0));
+        assert_eq!(items[0].transform().position, Vec2::new(5.0, 5.0));
+    }
+
+    #[test]
+    fn undo_rotate() {
+        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        items[0].transform_mut().rotation = 1.5;
+        stack.push(Command::Rotate {
+            indices: vec![0],
+            old_rotations: vec![0.0],
+            new_rotations: vec![1.5],
+            old_positions: vec![Vec2::ZERO],
+            new_positions: vec![Vec2::ZERO],
+        });
+
+        stack.undo(&mut items, &mut selected);
+        assert!((items[0].transform().rotation).abs() < 0.001);
+
+        stack.redo(&mut items, &mut selected);
+        assert!((items[0].transform().rotation - 1.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn undo_crop() {
+        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        let crop = Rect::from_min_size(egui::pos2(10.0, 10.0), Vec2::new(50.0, 50.0));
+        items[0].set_crop_rect(Some(crop));
+        stack.push(Command::Crop {
+            idx: 0,
+            old_rect: None,
+            new_rect: Some(crop),
+        });
+
+        stack.undo(&mut items, &mut selected);
+        assert!(items[0].crop_rect().is_none());
+
+        stack.redo(&mut items, &mut selected);
+        assert_eq!(items[0].crop_rect().unwrap(), crop);
+    }
+
+    #[test]
+    fn undo_edit_text() {
+        let mut items = vec![BoardItem::new_text("hello".into(), Vec2::ZERO)];
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        items[0].set_text_content("world".into());
+        stack.push(Command::EditText {
+            idx: 0,
+            old_content: "hello".into(),
+            new_content: "world".into(),
+        });
+
+        stack.undo(&mut items, &mut selected);
+        assert_eq!(items[0].text_content().unwrap(), "hello");
+
+        stack.redo(&mut items, &mut selected);
+        assert_eq!(items[0].text_content().unwrap(), "world");
+    }
+
+    #[test]
+    fn undo_flip() {
+        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        items[0].toggle_flip(true);
+        stack.push(Command::Flip {
+            indices: vec![0],
+            horizontal: true,
+        });
+
+        assert!(matches!(&items[0], BoardItem::Image(img) if img.flip_h));
+
+        stack.undo(&mut items, &mut selected);
+        assert!(matches!(&items[0], BoardItem::Image(img) if !img.flip_h));
+
+        stack.redo(&mut items, &mut selected);
+        assert!(matches!(&items[0], BoardItem::Image(img) if img.flip_h));
+    }
+
+    #[test]
+    fn undo_grayscale() {
+        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        // toggle_grayscale without texture just flips the flag
+        items[0].toggle_grayscale();
+        stack.push(Command::Grayscale { indices: vec![0] });
+
+        assert!(matches!(&items[0], BoardItem::Image(img) if img.grayscale));
+
+        stack.undo(&mut items, &mut selected);
+        assert!(matches!(&items[0], BoardItem::Image(img) if !img.grayscale));
+    }
+
+    #[test]
+    fn undo_add_label() {
+        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        items[0].add_label(Label::new("test".into(), Vec2::new(0.0, -20.0)));
+        stack.push(Command::AddLabel { item_idx: 0 });
+
+        assert_eq!(items[0].labels().len(), 1);
+
+        stack.undo(&mut items, &mut selected);
+        assert_eq!(items[0].labels().len(), 0);
+
+        stack.redo(&mut items, &mut selected);
+        assert_eq!(items[0].labels().len(), 1);
+        assert_eq!(items[0].labels()[0].text, "test");
+    }
+
+    #[test]
+    fn undo_delete_label() {
+        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+        items[0].add_label(Label::new("keep".into(), Vec2::ZERO));
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        let label = items[0].labels()[0].clone();
+        items[0].labels_mut().unwrap().remove(0);
+        stack.push(Command::DeleteLabel {
+            item_idx: 0,
+            label_idx: 0,
+            label,
+        });
+
+        assert_eq!(items[0].labels().len(), 0);
+
+        stack.undo(&mut items, &mut selected);
+        assert_eq!(items[0].labels().len(), 1);
+        assert_eq!(items[0].labels()[0].text, "keep");
+    }
+
+    #[test]
+    fn undo_move_label() {
+        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+        items[0].add_label(Label::new("lbl".into(), Vec2::new(0.0, -20.0)));
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        let old_offset = Vec2::new(0.0, -20.0);
+        let new_offset = Vec2::new(50.0, -30.0);
+        items[0].labels_mut().unwrap()[0].offset = new_offset;
+        stack.push(Command::MoveLabel {
+            item_idx: 0,
+            label_idx: 0,
+            old_offset,
+            new_offset,
+        });
+
+        stack.undo(&mut items, &mut selected);
+        assert_eq!(items[0].labels()[0].offset, old_offset);
+
+        stack.redo(&mut items, &mut selected);
+        assert_eq!(items[0].labels()[0].offset, new_offset);
+    }
+
+    #[test]
+    fn undo_edit_label() {
+        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+        items[0].add_label(Label::new("old".into(), Vec2::ZERO));
+        let mut selected = HashSet::new();
+        let mut stack = UndoStack::default();
+
+        items[0].labels_mut().unwrap()[0].text = "new".into();
+        stack.push(Command::EditLabel {
+            item_idx: 0,
+            label_idx: 0,
+            old_text: "old".into(),
+            new_text: "new".into(),
+        });
+
+        stack.undo(&mut items, &mut selected);
+        assert_eq!(items[0].labels()[0].text, "old");
+
+        stack.redo(&mut items, &mut selected);
+        assert_eq!(items[0].labels()[0].text, "new");
     }
 }
