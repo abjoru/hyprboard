@@ -181,7 +181,7 @@ pub fn render_scene(
         if !rect.intersects(cull_rect) {
             continue;
         }
-        let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+        let resp = ui.allocate_rect(rect, Sense::click());
         item_responses.push((idx, resp));
     }
 
