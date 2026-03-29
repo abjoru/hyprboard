@@ -276,7 +276,11 @@ impl HyprBoardApp {
                     if ui.button("Save").clicked() {
                         self.save();
                         self.show_unsaved_dialog = false;
-                        self.execute_pending(ctx);
+                        if !self.board.is_dirty() {
+                            self.execute_pending(ctx);
+                        } else {
+                            self.pending_action = PendingAction::None;
+                        }
                     }
                     if ui.button("Discard").clicked() {
                         self.board.mark_clean();

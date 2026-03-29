@@ -13,7 +13,6 @@ egui = "0.33"
 egui_extras = { version = "0.33", features = ["all_loaders"] }
 image = { version = "0.25", features = ["png", "jpeg", "bmp", "gif", "webp"] }
 rfd = "0.17"
-arboard = { version = "3.6", features = ["image-data"] }
 wgpu = { version = "27", default-features = false, features = ["vulkan"] }
 ureq = "3"
 rusqlite = { version = "0.34", features = ["bundled"] }

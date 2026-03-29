@@ -1,19 +1,19 @@
 /// Simple percent-decoding for file:// URLs
 pub fn urlencoding_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.bytes();
-    while let Some(b) = chars.next() {
+    let mut bytes = Vec::with_capacity(s.len());
+    let mut iter = s.bytes();
+    while let Some(b) = iter.next() {
         if b == b'%' {
-            let hi = chars.next().and_then(hex_val);
-            let lo = chars.next().and_then(hex_val);
+            let hi = iter.next().and_then(hex_val);
+            let lo = iter.next().and_then(hex_val);
             if let (Some(h), Some(l)) = (hi, lo) {
-                result.push((h << 4 | l) as char);
+                bytes.push(h << 4 | l);
             }
         } else {
-            result.push(b as char);
+            bytes.push(b);
         }
     }
-    result
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -81,6 +81,14 @@ mod tests {
     #[test]
     fn decode_partial_percent() {
         assert_eq!(urlencoding_decode("abc%2"), "abc");
+    }
+
+    #[test]
+    fn decode_utf8_multibyte() {
+        // é = U+00E9 = %C3%A9 in UTF-8
+        assert_eq!(urlencoding_decode("caf%C3%A9"), "café");
+        // ü = U+00FC = %C3%BC
+        assert_eq!(urlencoding_decode("Gn%C3%BCbel"), "Gnübel");
     }
 
     #[test]

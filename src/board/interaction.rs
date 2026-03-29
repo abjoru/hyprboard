@@ -525,15 +525,23 @@ fn handle_dragging(
         let total_delta = mouse - start_mouse;
         if total_delta.length_sq() > 0.0 {
             drag_started = true;
+            // Snap the delta based on the first item, preserving relative spacing
+            let snapped_delta = if snap_to_grid {
+                if let Some((_, first_start)) = start_positions.first() {
+                    let target = *first_start + total_delta;
+                    let gs = grid_size;
+                    let snapped =
+                        Vec2::new((target.x / gs).round() * gs, (target.y / gs).round() * gs);
+                    snapped - *first_start
+                } else {
+                    total_delta
+                }
+            } else {
+                total_delta
+            };
             for (idx, start_pos) in &start_positions {
                 if let Some(item) = items.get_mut(*idx) {
-                    let mut target = *start_pos + total_delta;
-                    if snap_to_grid {
-                        let gs = grid_size;
-                        target.x = (target.x / gs).round() * gs;
-                        target.y = (target.y / gs).round() * gs;
-                    }
-                    item.transform_mut().position = target;
+                    item.transform_mut().position = *start_pos + snapped_delta;
                 }
             }
         }
@@ -823,16 +831,19 @@ fn handle_editing_text(
     let escape = ui.input(|i| i.key_pressed(Key::Escape));
     if enter || escape || resp.lost_focus() {
         if escape {
-            items[idx].set_text_content(old_content);
+            items[idx].set_text_content(old_content.clone());
         } else if text != old_content {
             undo_stack.push(Command::EditText {
                 idx,
-                old_content,
+                old_content: old_content.clone(),
                 new_content: text,
             });
         }
         if items[idx].text_content().is_some_and(|t| t.is_empty()) {
-            items.remove(idx);
+            let removed = items.remove(idx);
+            undo_stack.push(Command::Delete {
+                items: vec![(idx, removed)],
+            });
         }
         return InteractionState::Idle;
     }
