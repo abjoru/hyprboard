@@ -32,6 +32,7 @@ pub struct Board {
     download_tx: mpsc::Sender<(Vec<u8>, Vec2)>,
     download_rx: mpsc::Receiver<(Vec<u8>, Vec2)>,
     pending_export: Option<Vec<u8>>,
+    pending_zoom: Option<Rect>,
     pub suppress_input: bool,
 }
 
@@ -53,6 +54,7 @@ impl Default for Board {
             download_tx,
             download_rx,
             pending_export: None,
+            pending_zoom: None,
             suppress_input: false,
         }
     }
@@ -307,6 +309,16 @@ impl Board {
         }
     }
 
+    pub fn add_text_at(&mut self, screen_pos: Pos2) {
+        let pos = self.screen_to_scene(screen_pos);
+        self.items.push(BoardItem::new_text("Text".into(), pos));
+        let idx = self.items.len() - 1;
+        self.undo_stack.push(Command::Add { count: 1 });
+        self.selected.clear();
+        self.selected.insert(idx);
+        self.interaction = InteractionState::EditingText { idx };
+    }
+
     pub fn take_pending_export(&mut self) -> Option<Vec<u8>> {
         self.pending_export.take()
     }
@@ -508,6 +520,7 @@ impl Board {
         let widget_rect = &mut self.widget_rect;
         let next_texture_id = &mut self.next_texture_id;
         let pending_export = &mut self.pending_export;
+        let pending_zoom = &mut self.pending_zoom;
         let suppress_input = self.suppress_input;
 
         *widget_rect = ui.max_rect();
@@ -536,8 +549,13 @@ impl Board {
                     next_texture_id,
                     pending_export,
                     suppress_input,
+                    pending_zoom,
                 );
             });
+
+        if let Some(rect) = self.pending_zoom.take() {
+            self.scene_rect = rect;
+        }
     }
 
     pub fn handle_input(&mut self, ctx: &egui::Context) {

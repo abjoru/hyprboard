@@ -646,6 +646,23 @@ impl HyprBoardApp {
                     }
                 });
 
+                if let Some(ref path) = self.current_file {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.display().to_string());
+                    let dirty = if self.board.is_dirty() {
+                        " \u{2022}"
+                    } else {
+                        ""
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{name}{dirty}"))
+                            .small()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let count = self.board.item_count();
                     let sel = self.board.selection_count();
@@ -774,6 +791,11 @@ impl HyprBoardApp {
                         {
                             close = true;
                             self.board.paste_from_clipboard(ctx);
+                        }
+
+                        if ui.button("Add Text").clicked() {
+                            close = true;
+                            self.board.add_text_at(pos);
                         }
 
                         ui.separator();

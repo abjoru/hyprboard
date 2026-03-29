@@ -131,6 +131,7 @@ pub fn render_scene(
     next_texture_id: &mut u64,
     pending_export: &mut Option<Vec<u8>>,
     suppress_input: bool,
+    pending_zoom: &mut Option<Rect>,
 ) {
     let pointer_pos = if suppress_input {
         None
@@ -224,6 +225,17 @@ pub fn render_scene(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
+    // Global double-click: zoom to fit (empty canvas) or zoom to image
+    if double_clicked && hovered_item.is_none() && hovered_label.is_none() {
+        let rects = items.iter().map(|item| item.bounding_rect());
+        if let Some(first) = rects.clone().next() {
+            let all = rects.fold(first, |acc, r| acc.union(r));
+            *pending_zoom = Some(all.expand(50.0));
+        }
+        *interaction = InteractionState::Idle;
+        return;
+    }
+
     // State machine
     let current_state = std::mem::take(interaction);
     *interaction = match current_state {
@@ -238,6 +250,7 @@ pub fn render_scene(
             items,
             selected,
             undo_stack,
+            pending_zoom,
         ),
         InteractionState::DraggingItems {
             drag_started,
@@ -245,6 +258,7 @@ pub fn render_scene(
             start_positions,
         } => handle_dragging(
             primary_released,
+            double_clicked,
             pointer_pos,
             drag_started,
             start_mouse,
@@ -253,6 +267,7 @@ pub fn render_scene(
             undo_stack,
             snap_to_grid,
             grid_size,
+            pending_zoom,
         ),
         InteractionState::SelectionRect { start } => handle_selection_rect(
             ui,
@@ -358,7 +373,8 @@ fn handle_idle(
     hovered_label: Option<(usize, usize)>,
     items: &mut Vec<BoardItem>,
     selected: &mut HashSet<usize>,
-    undo_stack: &mut UndoStack,
+    _undo_stack: &mut UndoStack,
+    _pending_zoom: &mut Option<Rect>,
 ) -> InteractionState {
     // Double-click on label: edit label
     if double_clicked && let Some((item_idx, label_idx)) = hovered_label {
@@ -391,24 +407,14 @@ fn handle_idle(
         };
     }
 
-    // Double-click: edit text or create new text
-    if double_clicked && let Some(pointer) = pointer_pos {
-        if let Some(idx) = hovered_item {
-            if items.get(idx).is_some_and(|i| i.text_content().is_some()) {
-                selected.clear();
-                selected.insert(idx);
-                return InteractionState::EditingText { idx };
-            }
-        } else {
-            // Double-click on empty canvas — create new text
-            let pos = pointer.to_vec2();
-            items.push(BoardItem::new_text("Text".into(), pos));
-            let idx = items.len() - 1;
-            undo_stack.push(Command::Add { count: 1 });
-            selected.clear();
-            selected.insert(idx);
-            return InteractionState::EditingText { idx };
-        }
+    // Double-click text: edit
+    if double_clicked
+        && let Some(idx) = hovered_item
+        && items.get(idx).is_some_and(|i| i.text_content().is_some())
+    {
+        selected.clear();
+        selected.insert(idx);
+        return InteractionState::EditingText { idx };
     }
 
     if !primary_pressed {
@@ -463,6 +469,7 @@ fn handle_idle(
 #[allow(clippy::too_many_arguments)]
 fn handle_dragging(
     primary_released: bool,
+    double_clicked: bool,
     pointer_pos: Option<Pos2>,
     mut drag_started: bool,
     start_mouse: Pos2,
@@ -471,7 +478,19 @@ fn handle_dragging(
     undo_stack: &mut UndoStack,
     snap_to_grid: bool,
     grid_size: f32,
+    pending_zoom: &mut Option<Rect>,
 ) -> InteractionState {
+    // Double-click before drag starts: zoom to item
+    if double_clicked
+        && !drag_started
+        && let Some((idx, _)) = start_positions.first()
+        && let Some(item) = items.get(*idx)
+        && item.text_content().is_none()
+    {
+        *pending_zoom = Some(item.bounding_rect().expand(50.0));
+        return InteractionState::Idle;
+    }
+
     if primary_released {
         if drag_started {
             let indices: Vec<usize> = start_positions.iter().map(|(i, _)| *i).collect();
