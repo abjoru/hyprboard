@@ -63,6 +63,7 @@ pub struct ImageItem {
     pub flip_h: bool,
     pub flip_v: bool,
     pub labels: Vec<Label>,
+    pub border_color: Color32,
 }
 
 #[derive(Clone)]
@@ -70,6 +71,8 @@ pub struct TextItem {
     pub content: String,
     pub font_size: f32,
     pub color: Color32,
+    pub bg_color: Color32,
+    pub border_color: Color32,
     pub transform: Transform,
 }
 
@@ -97,6 +100,7 @@ impl BoardItem {
             flip_h: false,
             flip_v: false,
             labels: Vec::new(),
+            border_color: Color32::TRANSPARENT,
         })
     }
 
@@ -105,6 +109,8 @@ impl BoardItem {
             content,
             font_size: 16.0,
             color: Color32::WHITE,
+            bg_color: Color32::TRANSPARENT,
+            border_color: Color32::TRANSPARENT,
             transform: Transform::default().with_position(position),
         })
     }
@@ -150,8 +156,10 @@ impl BoardItem {
                 base * img.transform.scale
             }
             Self::Text(txt) => {
-                let approx_width = txt.content.len() as f32 * txt.font_size * 0.6;
-                Vec2::new(approx_width, txt.font_size * 1.2)
+                let line_count = txt.content.lines().count().max(1) as f32;
+                let max_line_len = txt.content.lines().map(|l| l.len()).max().unwrap_or(0) as f32;
+                let approx_width = max_line_len * txt.font_size * 0.6;
+                Vec2::new(approx_width, txt.font_size * 1.4 * line_count)
             }
         }
     }
@@ -205,6 +213,59 @@ impl BoardItem {
     pub fn set_text_content(&mut self, new_content: String) {
         if let Self::Text(txt) = self {
             txt.content = new_content;
+        }
+    }
+
+    pub fn text_font_size(&self) -> Option<f32> {
+        match self {
+            Self::Text(txt) => Some(txt.font_size),
+            _ => None,
+        }
+    }
+
+    pub fn set_text_font_size(&mut self, size: f32) {
+        if let Self::Text(txt) = self {
+            txt.font_size = size;
+        }
+    }
+
+    pub fn text_color(&self) -> Option<Color32> {
+        match self {
+            Self::Text(txt) => Some(txt.color),
+            _ => None,
+        }
+    }
+
+    pub fn set_text_color(&mut self, color: Color32) {
+        if let Self::Text(txt) = self {
+            txt.color = color;
+        }
+    }
+
+    pub fn text_bg_color(&self) -> Option<Color32> {
+        match self {
+            Self::Text(txt) => Some(txt.bg_color),
+            _ => None,
+        }
+    }
+
+    pub fn set_text_bg_color(&mut self, color: Color32) {
+        if let Self::Text(txt) = self {
+            txt.bg_color = color;
+        }
+    }
+
+    pub fn border_color(&self) -> Color32 {
+        match self {
+            Self::Image(img) => img.border_color,
+            Self::Text(txt) => txt.border_color,
+        }
+    }
+
+    pub fn set_border_color(&mut self, color: Color32) {
+        match self {
+            Self::Image(img) => img.border_color = color,
+            Self::Text(txt) => txt.border_color = color,
         }
     }
 
@@ -318,6 +379,7 @@ mod tests {
             flip_h: false,
             flip_v: false,
             labels: Vec::new(),
+            border_color: Color32::TRANSPARENT,
         })
     }
 

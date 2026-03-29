@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 
 use egui::{
-    Key, Modifiers, Pos2, Rect, Ui, Vec2,
+    Color32, Key, Modifiers, Pos2, Rect, Ui, Vec2,
     containers::{DragPanButtons, Scene},
 };
 
@@ -35,6 +35,8 @@ pub struct Board {
     pending_zoom: Option<Rect>,
     opacity_drag_start: Option<Vec<(usize, f32)>>,
     pub suppress_input: bool,
+    text_style_drag_start: Option<Vec<(usize, f32, Color32, Color32)>>,
+    border_drag_start: Option<Vec<(usize, Color32)>>,
 }
 
 impl Default for Board {
@@ -58,6 +60,8 @@ impl Default for Board {
             pending_zoom: None,
             opacity_drag_start: None,
             suppress_input: false,
+            text_style_drag_start: None,
+            border_drag_start: None,
         }
     }
 }
@@ -74,6 +78,10 @@ impl Board {
 
     pub fn visible_rect(&self) -> Rect {
         self.visible_rect
+    }
+
+    pub fn widget_rect_top(&self) -> f32 {
+        self.widget_rect.top()
     }
 
     /// Convert a screen-space position to scene-space coordinates.
@@ -333,7 +341,7 @@ impl Board {
         self.undo_stack.redo(&mut self.items, &mut self.selected);
     }
 
-    fn raise_selected(&mut self) {
+    pub fn raise_selected(&mut self) {
         if self.selected.is_empty() {
             return;
         }
@@ -355,7 +363,7 @@ impl Board {
         }
     }
 
-    fn lower_selected(&mut self) {
+    pub fn lower_selected(&mut self) {
         if self.selected.is_empty() {
             return;
         }
@@ -375,6 +383,65 @@ impl Board {
         if changed {
             self.undo_stack.push(Command::ZOrder { old_order });
         }
+    }
+
+    pub fn bring_to_front(&mut self) {
+        if self.selected.is_empty() {
+            return;
+        }
+        let old_order: Vec<usize> = (0..self.items.len()).collect();
+        let mut indices: Vec<usize> = self.selected.iter().copied().collect();
+        indices.sort_unstable();
+
+        // Already at top?
+        let top = self.items.len() - indices.len();
+        if indices.iter().enumerate().all(|(i, &idx)| idx == top + i) {
+            return;
+        }
+
+        let moved: Vec<BoardItem> = indices
+            .iter()
+            .rev()
+            .map(|&i| self.items.remove(i))
+            .collect();
+        let new_start = self.items.len();
+        self.items.extend(moved.into_iter().rev());
+
+        self.selected.clear();
+        for i in 0..indices.len() {
+            self.selected.insert(new_start + i);
+        }
+        self.undo_stack.push(Command::ZOrder { old_order });
+    }
+
+    pub fn send_to_back(&mut self) {
+        if self.selected.is_empty() {
+            return;
+        }
+        let old_order: Vec<usize> = (0..self.items.len()).collect();
+        let mut indices: Vec<usize> = self.selected.iter().copied().collect();
+        indices.sort_unstable();
+
+        // Already at bottom?
+        if indices.iter().enumerate().all(|(i, &idx)| idx == i) {
+            return;
+        }
+
+        let moved: Vec<BoardItem> = indices
+            .iter()
+            .rev()
+            .map(|&i| self.items.remove(i))
+            .collect();
+        let count = moved.len();
+        for (i, item) in moved.into_iter().rev().enumerate() {
+            self.items.insert(i, item);
+        }
+
+        self.selected.clear();
+        for i in 0..count {
+            self.selected.insert(i);
+        }
+        self.undo_stack.push(Command::ZOrder { old_order });
     }
 
     pub fn apply_opacity_selected(&mut self, new_opacity: f32) {
@@ -421,6 +488,188 @@ impl Board {
             Some(first)
         } else {
             None
+        }
+    }
+
+    pub fn has_image_selected(&self) -> bool {
+        self.selected.iter().any(|&i| {
+            self.items
+                .get(i)
+                .is_some_and(|item| matches!(item, BoardItem::Image(_)))
+        })
+    }
+
+    pub fn has_text_selected(&self) -> bool {
+        self.selected.iter().any(|&i| {
+            self.items
+                .get(i)
+                .is_some_and(|item| item.text_font_size().is_some())
+        })
+    }
+
+    pub fn selected_text_font_size(&self) -> Option<f32> {
+        let mut iter = self
+            .selected
+            .iter()
+            .filter_map(|&i| self.items.get(i)?.text_font_size());
+        let first = iter.next()?;
+        if iter.all(|s| (s - first).abs() < 0.01) {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    pub fn selected_text_color(&self) -> Option<Color32> {
+        let mut iter = self
+            .selected
+            .iter()
+            .filter_map(|&i| self.items.get(i)?.text_color());
+        let first = iter.next()?;
+        if iter.all(|c| c == first) {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    pub fn selected_text_bg_color(&self) -> Option<Color32> {
+        let mut iter = self
+            .selected
+            .iter()
+            .filter_map(|&i| self.items.get(i)?.text_bg_color());
+        let first = iter.next()?;
+        if iter.all(|c| c == first) {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    pub fn selected_border_color(&self) -> Option<Color32> {
+        let mut iter = self
+            .selected
+            .iter()
+            .map(|&i| self.items.get(i).map(|item| item.border_color()));
+        let first = iter.next()??;
+        if iter.all(|c| c == Some(first)) {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    pub fn apply_text_style(&mut self, font_size: f32, color: Color32, bg_color: Color32) {
+        if self.selected.is_empty() {
+            return;
+        }
+        if self.text_style_drag_start.is_none() {
+            let start: Vec<(usize, f32, Color32, Color32)> = self
+                .selected
+                .iter()
+                .filter_map(|&i| {
+                    let item = self.items.get(i)?;
+                    Some((
+                        i,
+                        item.text_font_size()?,
+                        item.text_color()?,
+                        item.text_bg_color()?,
+                    ))
+                })
+                .collect();
+            self.text_style_drag_start = Some(start);
+        }
+        for &idx in &self.selected {
+            if let Some(item) = self.items.get_mut(idx) {
+                item.set_text_font_size(font_size);
+                item.set_text_color(color);
+                item.set_text_bg_color(bg_color);
+            }
+        }
+    }
+
+    pub fn commit_text_style(&mut self) {
+        if let Some(start) = self.text_style_drag_start.take() {
+            let indices: Vec<usize> = start.iter().map(|t| t.0).collect();
+            let old_font_sizes: Vec<f32> = start.iter().map(|t| t.1).collect();
+            let old_colors: Vec<Color32> = start.iter().map(|t| t.2).collect();
+            let old_bg_colors: Vec<Color32> = start.iter().map(|t| t.3).collect();
+            let new_font_sizes: Vec<f32> = indices
+                .iter()
+                .filter_map(|&i| self.items.get(i)?.text_font_size())
+                .collect();
+            let new_colors: Vec<Color32> = indices
+                .iter()
+                .filter_map(|&i| self.items.get(i)?.text_color())
+                .collect();
+            let new_bg_colors: Vec<Color32> = indices
+                .iter()
+                .filter_map(|&i| self.items.get(i)?.text_bg_color())
+                .collect();
+            let changed = old_font_sizes != new_font_sizes
+                || old_colors != new_colors
+                || old_bg_colors != new_bg_colors;
+            if changed {
+                self.undo_stack.push(Command::TextStyle {
+                    indices,
+                    old_font_sizes,
+                    new_font_sizes,
+                    old_colors,
+                    new_colors,
+                    old_bg_colors,
+                    new_bg_colors,
+                });
+            }
+        }
+    }
+
+    pub fn apply_border_color(&mut self, color: Color32) {
+        if self.selected.is_empty() {
+            return;
+        }
+        if self.border_drag_start.is_none() {
+            let start: Vec<(usize, Color32)> = self
+                .selected
+                .iter()
+                .map(|&i| {
+                    (
+                        i,
+                        self.items
+                            .get(i)
+                            .map(|item| item.border_color())
+                            .unwrap_or(Color32::TRANSPARENT),
+                    )
+                })
+                .collect();
+            self.border_drag_start = Some(start);
+        }
+        for &idx in &self.selected {
+            if let Some(item) = self.items.get_mut(idx) {
+                item.set_border_color(color);
+            }
+        }
+    }
+
+    pub fn commit_border_color(&mut self) {
+        if let Some(start) = self.border_drag_start.take() {
+            let indices: Vec<usize> = start.iter().map(|t| t.0).collect();
+            let old_colors: Vec<Color32> = start.iter().map(|t| t.1).collect();
+            let new_colors: Vec<Color32> = indices
+                .iter()
+                .map(|&i| {
+                    self.items
+                        .get(i)
+                        .map(|item| item.border_color())
+                        .unwrap_or(Color32::TRANSPARENT)
+                })
+                .collect();
+            if old_colors != new_colors {
+                self.undo_stack.push(Command::BorderColor {
+                    indices,
+                    old_colors,
+                    new_colors,
+                });
+            }
         }
     }
 

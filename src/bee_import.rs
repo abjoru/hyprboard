@@ -103,6 +103,7 @@ pub fn import_bee(path: &Path) -> Result<Vec<BoardItem>, String> {
                     flip_h,
                     flip_v: false,
                     labels: Vec::new(),
+                    border_color: egui::Color32::TRANSPARENT,
                 }));
             }
             "text" => {

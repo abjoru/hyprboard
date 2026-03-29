@@ -1,12 +1,21 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use egui::Vec2;
+use egui::{Color32, Vec2};
 use rusqlite::{Connection, params};
+
+fn color_to_u32(c: Color32) -> u32 {
+    u32::from_be_bytes([c.r(), c.g(), c.b(), c.a()])
+}
+
+fn u32_to_color(v: u32) -> Color32 {
+    let [r, g, b, a] = v.to_be_bytes();
+    Color32::from_rgba_unmultiplied(r, g, b, a)
+}
 
 use crate::items::{BoardItem, ImageItem, Label, TextItem, Transform, image_dimensions};
 
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 
 fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -36,7 +45,9 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             font_size  REAL,
             color      INTEGER,
             img_width  REAL,
-            img_height REAL
+            img_height REAL,
+            bg_color   INTEGER,
+            border_color INTEGER
         );
         CREATE TABLE IF NOT EXISTS labels (
             id         INTEGER PRIMARY KEY,
@@ -60,6 +71,15 @@ fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE items ADD COLUMN img_height REAL;",
         )?;
         log::info!("Migrated schema: added img_width/img_height columns");
+    }
+
+    let has_bg_color: bool = conn.prepare("SELECT bg_color FROM items LIMIT 0").is_ok();
+    if !has_bg_color {
+        conn.execute_batch(
+            "ALTER TABLE items ADD COLUMN bg_color INTEGER;
+             ALTER TABLE items ADD COLUMN border_color INTEGER;",
+        )?;
+        log::info!("Migrated schema: added bg_color/border_color columns");
     }
 
     conn.execute(
@@ -92,13 +112,15 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
                 image_data, crop_x, crop_y, crop_w, crop_h,
                 opacity, grayscale, flip_h, flip_v,
                 content, font_size, color,
-                img_width, img_height
+                img_width, img_height,
+                bg_color, border_color
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19,
-                ?20, ?21
+                ?20, ?21,
+                ?22, ?23
             )",
         )?;
 
@@ -144,33 +166,23 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
                         None::<i64>,
                         img.original_size.x as f64,
                         img.original_size.y as f64,
+                        None::<i64>,
+                        color_to_u32(img.border_color) as i64,
                     ])?;
 
                     let item_id = conn.last_insert_rowid();
                     for label in &img.labels {
-                        let color_u32 = u32::from_be_bytes([
-                            label.color.r(),
-                            label.color.g(),
-                            label.color.b(),
-                            label.color.a(),
-                        ]);
                         label_stmt.execute(params![
                             item_id,
                             label.text,
                             label.offset.x as f64,
                             label.offset.y as f64,
                             label.font_size as f64,
-                            color_u32 as i64,
+                            color_to_u32(label.color) as i64,
                         ])?;
                     }
                 }
                 BoardItem::Text(txt) => {
-                    let color_u32 = u32::from_be_bytes([
-                        txt.color.r(),
-                        txt.color.g(),
-                        txt.color.b(),
-                        txt.color.a(),
-                    ]);
                     stmt.execute(params![
                         z_order as i64,
                         "text",
@@ -190,9 +202,11 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
                         None::<i32>,
                         &txt.content,
                         txt.font_size as f64,
-                        color_u32,
+                        color_to_u32(txt.color),
                         None::<f64>,
                         None::<f64>,
+                        color_to_u32(txt.bg_color) as i64,
+                        color_to_u32(txt.border_color) as i64,
                     ])?;
                 }
             }
@@ -216,7 +230,8 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
                 image_data, crop_x, crop_y, crop_w, crop_h,
                 opacity, grayscale, flip_h, flip_v,
                 content, font_size, color,
-                img_width, img_height
+                img_width, img_height,
+                bg_color, border_color
          FROM items ORDER BY z_order ASC",
     )?;
 
@@ -250,6 +265,8 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
             color: row.get(18)?,
             img_width: row.get(19)?,
             img_height: row.get(20)?,
+            bg_color: row.get(21)?,
+            border_color: row.get(22)?,
         })
     })?;
 
@@ -292,20 +309,17 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
                         Ok((text, offset_x, offset_y, font_size, color_val))
                     })?
                     .filter_map(|r| r.ok())
-                    .map(|(text, ox, oy, fs, cv)| {
-                        let bytes = (cv as u32).to_be_bytes();
-                        Label {
-                            text,
-                            offset: Vec2::new(ox as f32, oy as f32),
-                            font_size: fs as f32,
-                            color: egui::Color32::from_rgba_unmultiplied(
-                                bytes[0], bytes[1], bytes[2], bytes[3],
-                            ),
-                        }
+                    .map(|(text, ox, oy, fs, cv)| Label {
+                        text,
+                        offset: Vec2::new(ox as f32, oy as f32),
+                        font_size: fs as f32,
+                        color: u32_to_color(cv as u32),
                     })
                     .collect();
 
                 // Lazy load: don't decode, just store bytes + dimensions
+                let border_color = u32_to_color(row.border_color.unwrap_or(0) as u32);
+
                 items.push(BoardItem::Image(ImageItem {
                     texture: None,
                     original_bytes: Arc::from(bytes),
@@ -317,20 +331,22 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
                     flip_h: row.flip_h.unwrap_or(0) != 0,
                     flip_v: row.flip_v.unwrap_or(0) != 0,
                     labels,
+                    border_color,
                 }));
             }
             "text" => {
                 let content = row.content.unwrap_or_default();
                 let font_size = row.font_size.unwrap_or(16.0) as f32;
-                let color_u32 = row.color.unwrap_or(0xFFFFFFFF) as u32;
-                let bytes = color_u32.to_be_bytes();
-                let color =
-                    egui::Color32::from_rgba_unmultiplied(bytes[0], bytes[1], bytes[2], bytes[3]);
+                let color = u32_to_color(row.color.unwrap_or(0xFFFFFFFF) as u32);
+                let bg_color = u32_to_color(row.bg_color.unwrap_or(0) as u32);
+                let border_color = u32_to_color(row.border_color.unwrap_or(0) as u32);
 
                 items.push(BoardItem::Text(TextItem {
                     content,
                     font_size,
                     color,
+                    bg_color,
+                    border_color,
                     transform,
                 }));
             }
@@ -363,6 +379,8 @@ struct RawRow {
     color: Option<i64>,
     img_width: Option<f64>,
     img_height: Option<f64>,
+    bg_color: Option<i64>,
+    border_color: Option<i64>,
 }
 
 #[cfg(test)]
@@ -410,6 +428,7 @@ mod tests {
                 font_size: 18.0,
                 color: egui::Color32::from_rgb(255, 128, 0),
             }],
+            border_color: egui::Color32::TRANSPARENT,
         })];
 
         save_board(&path, &items).unwrap();
@@ -450,6 +469,8 @@ mod tests {
             content: "hello world".into(),
             font_size: 24.0,
             color: egui::Color32::from_rgb(0, 255, 128),
+            bg_color: egui::Color32::TRANSPARENT,
+            border_color: egui::Color32::TRANSPARENT,
             transform: Transform {
                 position: Vec2::new(100.0, 200.0),
                 rotation: 0.0,
@@ -490,11 +511,14 @@ mod tests {
                 flip_h: false,
                 flip_v: false,
                 labels: Vec::new(),
+                border_color: egui::Color32::TRANSPARENT,
             }),
             BoardItem::Text(TextItem {
                 content: "note".into(),
                 font_size: 16.0,
                 color: egui::Color32::WHITE,
+                bg_color: egui::Color32::TRANSPARENT,
+                border_color: egui::Color32::TRANSPARENT,
                 transform: Transform::default().with_position(Vec2::new(50.0, 50.0)),
             }),
         ];

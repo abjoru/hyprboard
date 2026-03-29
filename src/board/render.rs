@@ -198,6 +198,15 @@ pub fn draw_item(ui: &mut Ui, item: &BoardItem, is_selected: bool) {
                 ui.painter().add(egui::Shape::mesh(mesh));
             }
 
+            if img.border_color.a() > 0 {
+                ui.painter().rect_stroke(
+                    rect,
+                    0.0,
+                    Stroke::new(2.0, img.border_color),
+                    StrokeKind::Outside,
+                );
+            }
+
             if is_selected {
                 ui.painter().rect_stroke(
                     rect,
@@ -228,18 +237,31 @@ pub fn draw_item(ui: &mut Ui, item: &BoardItem, is_selected: bool) {
         }
         BoardItem::Text(txt) => {
             let pos = txt.transform.position.to_pos2();
-            ui.painter().text(
-                pos,
-                egui::Align2::LEFT_TOP,
-                &txt.content,
-                egui::FontId::proportional(txt.font_size),
-                txt.color,
-            );
+            let font = egui::FontId::proportional(txt.font_size);
+            let galley = ui
+                .painter()
+                .layout(txt.content.clone(), font, txt.color, f32::INFINITY);
+            let padding = 4.0;
+            let text_rect = Rect::from_min_size(pos, galley.size());
+            let padded_rect = text_rect.expand(padding);
+
+            if txt.bg_color.a() > 0 {
+                ui.painter().rect_filled(padded_rect, 2.0, txt.bg_color);
+            }
+            if txt.border_color.a() > 0 {
+                ui.painter().rect_stroke(
+                    padded_rect,
+                    2.0,
+                    Stroke::new(1.0, txt.border_color),
+                    StrokeKind::Outside,
+                );
+            }
+
+            ui.painter().galley(pos, galley, txt.color);
 
             if is_selected {
-                let rect = item.bounding_rect();
                 ui.painter().rect_stroke(
-                    rect,
+                    padded_rect,
                     0.0,
                     Stroke::new(1.0, SELECTION_COLOR.gamma_multiply(0.5)),
                     StrokeKind::Outside,

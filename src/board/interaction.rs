@@ -494,13 +494,15 @@ fn handle_dragging(
     grid_size: f32,
     pending_zoom: &mut Option<Rect>,
 ) -> InteractionState {
-    // Double-click before drag starts: zoom to item
+    // Double-click before drag starts: edit text or zoom to item
     if double_clicked
         && !drag_started
         && let Some((idx, _)) = start_positions.first()
         && let Some(item) = items.get(*idx)
-        && item.text_content().is_none()
     {
+        if item.text_content().is_some() {
+            return InteractionState::EditingText { idx: *idx };
+        }
         *pending_zoom = Some(item.bounding_rect().expand(50.0));
         return InteractionState::Idle;
     }
@@ -808,13 +810,17 @@ fn handle_editing_text(
     let text_edit_id = egui::Id::new("text_edit_inline").with(idx);
     let mut text = items[idx].text_content().unwrap_or("").to_string();
 
+    let line_count = text.lines().count().max(1) as f32;
     let rect = items[idx].bounding_rect();
     let resp = ui.put(
         Rect::from_min_size(
             pos.to_pos2(),
-            Vec2::new(rect.width().max(100.0), font_size * 2.0),
+            Vec2::new(
+                rect.width().max(100.0),
+                font_size * 1.4 * line_count + font_size,
+            ),
         ),
-        egui::TextEdit::singleline(&mut text)
+        egui::TextEdit::multiline(&mut text)
             .id(text_edit_id)
             .font(egui::FontId::proportional(font_size))
             .desired_width(200.0),
@@ -822,13 +828,13 @@ fn handle_editing_text(
 
     items[idx].set_text_content(text.clone());
 
-    if !resp.has_focus() {
+    // Request focus only on the first frame; after that let click-away lose focus naturally
+    if !resp.has_focus() && !resp.lost_focus() {
         resp.request_focus();
     }
 
-    let enter = ui.input(|i| i.key_pressed(Key::Enter));
     let escape = ui.input(|i| i.key_pressed(Key::Escape));
-    if enter || escape || resp.lost_focus() {
+    if escape || resp.lost_focus() {
         if escape {
             items[idx].set_text_content(old_content.clone());
         } else if text != old_content {

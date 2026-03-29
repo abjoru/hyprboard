@@ -8,7 +8,7 @@ use crate::pdf_export::{PageSize, PdfMode};
 use crate::persistence;
 use crate::recent::RecentFiles;
 use eframe::Frame;
-use egui::{CentralPanel, Context, Key, TopBottomPanel, Vec2};
+use egui::{CentralPanel, Color32, Context, Key, TopBottomPanel, Vec2};
 
 #[derive(Default, PartialEq)]
 enum PendingAction {
@@ -79,7 +79,13 @@ impl eframe::App for HyprBoardApp {
             self.show_toolbar(ctx);
         }
 
-        self.board.suppress_input = self.context_menu_pos.is_some();
+        let pointer_outside_canvas = ctx.input(|i| i.pointer.latest_pos()).is_some_and(|pos| {
+            // Suppress if pointer is over a floating window/popup
+            ctx.layer_id_at(pos).is_some_and(|id| id.order != egui::Order::Background)
+                // Or if pointer is above the canvas area (over menu/toolbar)
+                || pos.y < self.board.widget_rect_top()
+        });
+        self.board.suppress_input = self.context_menu_pos.is_some() || pointer_outside_canvas;
 
         CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(30)))
@@ -94,7 +100,6 @@ impl eframe::App for HyprBoardApp {
             });
 
         self.show_context_menu(ctx);
-        self.show_properties_panel(ctx);
         self.show_unsaved_dialog(ctx);
         self.handle_dropped_files(ctx);
         self.show_drop_highlight(ctx);
@@ -331,44 +336,6 @@ impl HyprBoardApp {
         }
     }
 
-    fn show_properties_panel(&mut self, ctx: &Context) {
-        if !self.board.has_selection() {
-            return;
-        }
-
-        egui::Window::new("Properties")
-            .resizable(false)
-            .default_pos([10.0, 60.0])
-            .show(ctx, |ui| {
-                let mut opacity = self.board.selected_opacity().unwrap_or(1.0);
-                let old_opacity = opacity;
-                let resp = ui.horizontal(|ui| {
-                    ui.label("Opacity");
-                    ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0))
-                });
-                if (opacity - old_opacity).abs() > 0.001 {
-                    self.board.apply_opacity_selected(opacity);
-                }
-                if resp.inner.drag_stopped() {
-                    self.board.commit_opacity_selected();
-                }
-
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    if ui.button("Flip H").clicked() {
-                        self.board.flip_selected(true);
-                    }
-                    if ui.button("Flip V").clicked() {
-                        self.board.flip_selected(false);
-                    }
-                    if ui.button("Grayscale").clicked() {
-                        self.board.grayscale_selected();
-                    }
-                });
-            });
-    }
-
     fn icon(icon: &str) -> egui::RichText {
         egui::RichText::new(icon).size(18.0)
     }
@@ -377,22 +344,17 @@ impl HyprBoardApp {
         ui.button(icon).on_hover_text(label)
     }
 
-    fn toolbar_btn_enabled(
-        ui: &mut egui::Ui,
-        enabled: bool,
-        icon: egui::RichText,
-        label: &str,
-    ) -> egui::Response {
-        ui.add_enabled(enabled, egui::Button::new(icon))
-            .on_hover_text(label)
-    }
-
     fn show_toolbar(&mut self, ctx: &Context) {
         use egui_phosphor::regular::*;
+
+        let has_sel = self.board.has_selection();
+        let has_img = self.board.has_image_selected();
+        let has_txt = self.board.has_text_selected();
 
         TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
+                // File ops
                 if Self::toolbar_btn(ui, Self::icon(FOLDER_OPEN), "Open (Ctrl+O)").clicked() {
                     self.try_open(ctx);
                 }
@@ -419,42 +381,122 @@ impl HyprBoardApp {
                     self.board.fit_all();
                 }
 
-                ui.separator();
+                // Image controls (context-sensitive)
+                if has_img {
+                    ui.separator();
 
-                let has_sel = self.board.has_selection();
+                    if Self::toolbar_btn(ui, Self::icon(CROP), "Crop (C)").clicked() {
+                        self.board.start_crop();
+                    }
+                    if Self::toolbar_btn(ui, Self::icon(ARROWS_HORIZONTAL), "Flip H (Alt+H)")
+                        .clicked()
+                    {
+                        self.board.flip_selected(true);
+                    }
+                    if Self::toolbar_btn(ui, Self::icon(ARROWS_VERTICAL), "Flip V (Alt+V)")
+                        .clicked()
+                    {
+                        self.board.flip_selected(false);
+                    }
+                    if Self::toolbar_btn(ui, Self::icon(DROP_HALF_BOTTOM), "Grayscale (Alt+G)")
+                        .clicked()
+                    {
+                        self.board.grayscale_selected();
+                    }
 
-                if Self::toolbar_btn_enabled(ui, has_sel, Self::icon(CROP), "Crop (C)").clicked() {
-                    self.board.start_crop();
+                    let mut opacity = self.board.selected_opacity().unwrap_or(1.0);
+                    let old_opacity = opacity;
+                    ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0).text("Opacity"));
+                    if (opacity - old_opacity).abs() > 0.001 {
+                        self.board.apply_opacity_selected(opacity);
+                    }
                 }
-                if Self::toolbar_btn_enabled(
-                    ui,
-                    has_sel,
-                    Self::icon(ARROWS_HORIZONTAL),
-                    "Flip Horizontal (Alt+H)",
-                )
-                .clicked()
-                {
-                    self.board.flip_selected(true);
+
+                // Z-order (context-sensitive)
+                if has_sel {
+                    ui.separator();
+
+                    if Self::toolbar_btn(ui, Self::icon(ARROW_FAT_LINES_UP), "Bring to Front")
+                        .clicked()
+                    {
+                        self.board.bring_to_front();
+                    }
+                    if Self::toolbar_btn(ui, Self::icon(ARROW_FAT_UP), "Raise (])").clicked() {
+                        self.board.raise_selected();
+                    }
+                    if Self::toolbar_btn(ui, Self::icon(ARROW_FAT_DOWN), "Lower ([)").clicked() {
+                        self.board.lower_selected();
+                    }
+                    if Self::toolbar_btn(ui, Self::icon(ARROW_FAT_LINES_DOWN), "Send to Back")
+                        .clicked()
+                    {
+                        self.board.send_to_back();
+                    }
                 }
-                if Self::toolbar_btn_enabled(
-                    ui,
-                    has_sel,
-                    Self::icon(ARROWS_VERTICAL),
-                    "Flip Vertical (Alt+V)",
-                )
-                .clicked()
-                {
-                    self.board.flip_selected(false);
+
+                // Text controls (context-sensitive)
+                if has_txt {
+                    ui.separator();
+
+                    let mut font_size = self.board.selected_text_font_size().unwrap_or(16.0);
+                    let old_font_size = font_size;
+                    ui.label("Size");
+                    ui.add(
+                        egui::DragValue::new(&mut font_size)
+                            .range(8.0..=128.0)
+                            .speed(0.5),
+                    );
+
+                    let mut color = self.board.selected_text_color().unwrap_or(Color32::WHITE);
+                    let old_color = color;
+                    ui.label("Color");
+                    egui::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut color,
+                        egui::color_picker::Alpha::Opaque,
+                    );
+
+                    let mut bg_color = self
+                        .board
+                        .selected_text_bg_color()
+                        .unwrap_or(Color32::TRANSPARENT);
+                    let old_bg = bg_color;
+                    ui.label("Bg");
+                    egui::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut bg_color,
+                        egui::color_picker::Alpha::BlendOrAdditive,
+                    );
+
+                    let changed = (font_size - old_font_size).abs() > 0.01
+                        || color != old_color
+                        || bg_color != old_bg;
+                    if changed {
+                        self.board.apply_text_style(font_size, color, bg_color);
+                    }
                 }
-                if Self::toolbar_btn_enabled(
-                    ui,
-                    has_sel,
-                    Self::icon(DROP_HALF_BOTTOM),
-                    "Grayscale (Alt+G)",
-                )
-                .clicked()
-                {
-                    self.board.grayscale_selected();
+
+                // Border (universal, context-sensitive)
+                if has_sel {
+                    if !has_txt {
+                        ui.separator();
+                    }
+
+                    let mut border = self
+                        .board
+                        .selected_border_color()
+                        .unwrap_or(Color32::TRANSPARENT);
+                    let old_border = border;
+                    ui.label("Border");
+                    egui::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut border,
+                        egui::color_picker::Alpha::BlendOrAdditive,
+                    );
+
+                    if border != old_border {
+                        self.board.apply_border_color(border);
+                    }
                 }
 
                 ui.separator();
@@ -489,6 +531,13 @@ impl HyprBoardApp {
             });
             ui.add_space(4.0);
         });
+
+        // Commit on pointer release
+        if has_sel && ctx.input(|i| i.pointer.any_released()) {
+            self.board.commit_text_style();
+            self.board.commit_border_color();
+            self.board.commit_opacity_selected();
+        }
     }
 
     fn show_menu_bar(&mut self, ctx: &Context) {

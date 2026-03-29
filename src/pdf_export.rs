@@ -468,6 +468,7 @@ mod tests {
             flip_h: false,
             flip_v: false,
             labels: Vec::new(),
+            border_color: egui::Color32::TRANSPARENT,
         })
     }
 
@@ -492,6 +493,8 @@ mod tests {
             content: "Hello PDF".into(),
             font_size: 16.0,
             color: egui::Color32::WHITE,
+            bg_color: egui::Color32::TRANSPARENT,
+            border_color: egui::Color32::TRANSPARENT,
             transform: Transform::default().with_position(egui::Vec2::new(10.0, 20.0)),
         })];
         let bytes = export_pdf(&items, PdfMode::SinglePage, PageSize::A4).unwrap();
@@ -506,6 +509,8 @@ mod tests {
                 content: "Caption".into(),
                 font_size: 12.0,
                 color: egui::Color32::BLACK,
+                bg_color: egui::Color32::TRANSPARENT,
+                border_color: egui::Color32::TRANSPARENT,
                 transform: Transform::default().with_position(egui::Vec2::new(0.0, 160.0)),
             }),
             make_image(220.0, 0.0, 300.0, 200.0),

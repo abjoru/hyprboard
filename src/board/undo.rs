@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use egui::{Rect, Vec2};
+use egui::{Color32, Rect, Vec2};
 
 use crate::items::{BoardItem, Label};
 
@@ -74,6 +74,20 @@ pub enum Command {
         label_idx: usize,
         old_text: String,
         new_text: String,
+    },
+    TextStyle {
+        indices: Vec<usize>,
+        old_font_sizes: Vec<f32>,
+        new_font_sizes: Vec<f32>,
+        old_colors: Vec<Color32>,
+        new_colors: Vec<Color32>,
+        old_bg_colors: Vec<Color32>,
+        new_bg_colors: Vec<Color32>,
+    },
+    BorderColor {
+        indices: Vec<usize>,
+        old_colors: Vec<Color32>,
+        new_colors: Vec<Color32>,
     },
 }
 
@@ -348,6 +362,48 @@ impl UndoStack {
                     new_text: old_text.clone(),
                 }
             }
+            Command::BorderColor {
+                indices,
+                old_colors,
+                new_colors,
+            } => {
+                for (i, &idx) in indices.iter().enumerate() {
+                    if let Some(item) = items.get_mut(idx) {
+                        item.set_border_color(old_colors[i]);
+                    }
+                }
+                Command::BorderColor {
+                    indices: indices.clone(),
+                    old_colors: new_colors.clone(),
+                    new_colors: old_colors.clone(),
+                }
+            }
+            Command::TextStyle {
+                indices,
+                old_font_sizes,
+                new_font_sizes,
+                old_colors,
+                new_colors,
+                old_bg_colors,
+                new_bg_colors,
+            } => {
+                for (i, &idx) in indices.iter().enumerate() {
+                    if let Some(item) = items.get_mut(idx) {
+                        item.set_text_font_size(old_font_sizes[i]);
+                        item.set_text_color(old_colors[i]);
+                        item.set_text_bg_color(old_bg_colors[i]);
+                    }
+                }
+                Command::TextStyle {
+                    indices: indices.clone(),
+                    old_font_sizes: new_font_sizes.clone(),
+                    new_font_sizes: old_font_sizes.clone(),
+                    old_colors: new_colors.clone(),
+                    new_colors: old_colors.clone(),
+                    old_bg_colors: new_bg_colors.clone(),
+                    new_bg_colors: old_bg_colors.clone(),
+                }
+            }
         }
     }
 }
@@ -514,6 +570,7 @@ mod tests {
             flip_h: false,
             flip_v: false,
             labels: Vec::new(),
+            border_color: Color32::TRANSPARENT,
         })
     }
 
