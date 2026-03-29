@@ -24,6 +24,7 @@ imageproc = "0.25"
 flate2 = "1"
 log = "0.4"
 env_logger = "0.11"
+egui-phosphor = { version = "0.11.0", features = ["regular"] }
 
 [patch.crates-io]
 winit = { git = "https://github.com/abjoru/winit.git", branch = "hyprboard-v0.30-dnd" }

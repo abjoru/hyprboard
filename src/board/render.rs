@@ -20,36 +20,25 @@ pub fn draw_grid(ui: &mut Ui, visible_rect: Rect, grid_size: f32) {
         return;
     }
 
-    let grid_color = Color32::from_rgba_premultiplied(255, 255, 255, 15);
-    let stroke = Stroke::new(0.5, grid_color);
+    let dot_color = Color32::from_gray(85);
+    let dot_radius = 1.0;
 
     let mut shapes = Vec::new();
 
-    // Vertical lines
     let start_x = (visible_rect.min.x / grid_size).floor() * grid_size;
-    let mut x = start_x;
-    while x <= visible_rect.max.x {
-        shapes.push(egui::Shape::line_segment(
-            [
-                Pos2::new(x, visible_rect.min.y),
-                Pos2::new(x, visible_rect.max.y),
-            ],
-            stroke,
-        ));
-        x += grid_size;
-    }
-
-    // Horizontal lines
     let start_y = (visible_rect.min.y / grid_size).floor() * grid_size;
+
     let mut y = start_y;
     while y <= visible_rect.max.y {
-        shapes.push(egui::Shape::line_segment(
-            [
-                Pos2::new(visible_rect.min.x, y),
-                Pos2::new(visible_rect.max.x, y),
-            ],
-            stroke,
-        ));
+        let mut x = start_x;
+        while x <= visible_rect.max.x {
+            shapes.push(egui::Shape::circle_filled(
+                Pos2::new(x, y),
+                dot_radius,
+                dot_color,
+            ));
+            x += grid_size;
+        }
         y += grid_size;
     }
 

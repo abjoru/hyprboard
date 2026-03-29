@@ -21,7 +21,7 @@ pub enum InteractionState {
     Idle,
     DraggingItems {
         drag_started: bool,
-        last_pointer: Pos2,
+        start_mouse: Pos2,
         start_positions: Vec<(usize, Vec2)>,
     },
     SelectionRect {
@@ -241,14 +241,13 @@ pub fn render_scene(
         ),
         InteractionState::DraggingItems {
             drag_started,
-            last_pointer,
+            start_mouse,
             start_positions,
         } => handle_dragging(
             primary_released,
-            primary_down,
             pointer_pos,
             drag_started,
-            last_pointer,
+            start_mouse,
             start_positions,
             items,
             undo_stack,
@@ -280,6 +279,8 @@ pub fn render_scene(
             group_rect,
             items,
             undo_stack,
+            snap_to_grid,
+            grid_size,
         ),
         InteractionState::RotatingHandle {
             center,
@@ -447,7 +448,7 @@ fn handle_idle(
             .collect();
         return InteractionState::DraggingItems {
             drag_started: false,
-            last_pointer: pointer,
+            start_mouse: pointer,
             start_positions,
         };
     }
@@ -462,10 +463,9 @@ fn handle_idle(
 #[allow(clippy::too_many_arguments)]
 fn handle_dragging(
     primary_released: bool,
-    primary_down: bool,
     pointer_pos: Option<Pos2>,
     mut drag_started: bool,
-    last_pointer: Pos2,
+    start_mouse: Pos2,
     start_positions: Vec<(usize, Vec2)>,
     items: &mut [BoardItem],
     undo_stack: &mut UndoStack,
@@ -473,18 +473,6 @@ fn handle_dragging(
     grid_size: f32,
 ) -> InteractionState {
     if primary_released {
-        // Snap to grid on release
-        if snap_to_grid && drag_started {
-            let gs = grid_size;
-            for (idx, _) in &start_positions {
-                if let Some(item) = items.get_mut(*idx) {
-                    let pos = &mut item.transform_mut().position;
-                    pos.x = (pos.x / gs).round() * gs;
-                    pos.y = (pos.y / gs).round() * gs;
-                }
-            }
-        }
-
         if drag_started {
             let indices: Vec<usize> = start_positions.iter().map(|(i, _)| *i).collect();
             if let Some((first_idx, first_start)) = start_positions.first()
@@ -499,24 +487,27 @@ fn handle_dragging(
         return InteractionState::Idle;
     }
 
-    let mut current_pointer = last_pointer;
-    if primary_down && let Some(mouse) = pointer_pos {
-        let drag_delta = mouse - last_pointer;
-        if drag_delta.length_sq() > 0.0 {
+    if let Some(mouse) = pointer_pos {
+        let total_delta = mouse - start_mouse;
+        if total_delta.length_sq() > 0.0 {
             drag_started = true;
-            let sel: Vec<usize> = start_positions.iter().map(|(i, _)| *i).collect();
-            for idx in sel {
-                if let Some(item) = items.get_mut(idx) {
-                    item.transform_mut().position += drag_delta;
+            for (idx, start_pos) in &start_positions {
+                if let Some(item) = items.get_mut(*idx) {
+                    let mut target = *start_pos + total_delta;
+                    if snap_to_grid {
+                        let gs = grid_size;
+                        target.x = (target.x / gs).round() * gs;
+                        target.y = (target.y / gs).round() * gs;
+                    }
+                    item.transform_mut().position = target;
                 }
             }
-            current_pointer = mouse;
         }
     }
 
     InteractionState::DraggingItems {
         drag_started,
-        last_pointer: current_pointer,
+        start_mouse,
         start_positions,
     }
 }
@@ -623,6 +614,8 @@ fn handle_resizing(
     group_rect: Rect,
     items: &mut [BoardItem],
     undo_stack: &mut UndoStack,
+    snap_to_grid: bool,
+    grid_size: f32,
 ) -> InteractionState {
     if primary_released {
         let indices: Vec<usize> = initial_scales.iter().map(|(i, _)| *i).collect();
@@ -654,7 +647,16 @@ fn handle_resizing(
             let initial_dist = (start_mouse - anchor).length();
             let current_dist = (mouse - anchor).length();
             if initial_dist >= 1.0 {
-                let scale_factor = (current_dist / initial_dist).max(0.05);
+                let mut scale_factor = (current_dist / initial_dist).max(0.05);
+
+                if snap_to_grid {
+                    let gs = grid_size;
+                    let new_w = group_size.x * scale_factor;
+                    let snapped_w = (new_w / gs).round() * gs;
+                    if snapped_w >= gs {
+                        scale_factor = snapped_w / group_size.x;
+                    }
+                }
 
                 for (i, (idx, orig_scale)) in initial_scales.iter().enumerate() {
                     if let Some(item) = items.get_mut(*idx) {

@@ -1,5 +1,5 @@
 mod interaction;
-mod render;
+pub(crate) mod render;
 mod undo;
 
 use std::collections::HashSet;
@@ -41,12 +41,12 @@ impl Default for Board {
         Self {
             items: Vec::new(),
             selected: HashSet::new(),
-            scene_rect: Rect::from_min_size(egui::pos2(-2000.0, -2000.0), Vec2::splat(4000.0)),
+            scene_rect: Rect::NOTHING,
             interaction: InteractionState::Idle,
             undo_stack: UndoStack::default(),
             next_texture_id: 0,
-            show_grid: false,
-            snap_to_grid: false,
+            show_grid: true,
+            snap_to_grid: true,
             grid_size: 50.0,
             visible_rect: Rect::NOTHING,
             widget_rect: Rect::NOTHING,
@@ -274,6 +274,33 @@ impl Board {
         });
     }
 
+    pub fn start_screen_capture(&self, ctx: &egui::Context) {
+        let tx = self.download_tx.clone();
+        let ctx = ctx.clone();
+        let pos = self.scene_rect.center().to_vec2();
+        std::thread::spawn(move || {
+            let region = match std::process::Command::new("slurp").output() {
+                Ok(out) if out.status.success() => {
+                    String::from_utf8_lossy(&out.stdout).trim().to_string()
+                }
+                _ => return,
+            };
+            match std::process::Command::new("grim")
+                .args(["-g", &region, "-t", "png", "-"])
+                .output()
+            {
+                Ok(out) if out.status.success() => {
+                    let _ = tx.send((out.stdout, pos));
+                    ctx.request_repaint();
+                }
+                Ok(out) => {
+                    log::error!("grim failed: {}", String::from_utf8_lossy(&out.stderr));
+                }
+                Err(e) => log::error!("Failed to run grim: {e}"),
+            }
+        });
+    }
+
     pub fn poll_downloads(&mut self, ctx: &egui::Context) {
         while let Ok((bytes, pos)) = self.download_rx.try_recv() {
             self.add_image_from_bytes(ctx, &bytes, pos);
@@ -485,6 +512,11 @@ impl Board {
 
         *widget_rect = ui.max_rect();
 
+        if *scene_rect == Rect::NOTHING {
+            let size = widget_rect.size();
+            *scene_rect = Rect::from_center_size(egui::Pos2::ZERO, size);
+        }
+
         Scene::new()
             .zoom_range(0.05..=5.0)
             .drag_pan_buttons(DragPanButtons::MIDDLE)
@@ -636,6 +668,13 @@ impl Board {
         let export = ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::E));
         if export {
             self.start_export_region();
+        }
+
+        // Shift+S screen capture
+        let capture =
+            ctx.input(|i| i.key_pressed(Key::S) && i.modifiers.shift && !i.modifiers.ctrl);
+        if capture {
+            self.start_screen_capture(ctx);
         }
     }
 

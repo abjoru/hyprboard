@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::board::Board;
+use crate::board::render::SELECTION_COLOR;
 use crate::persistence;
 use crate::recent::RecentFiles;
 use eframe::Frame;
@@ -36,7 +37,7 @@ impl Default for HyprBoardApp {
             pending_action: PendingAction::None,
             show_unsaved_dialog: false,
             recent_files: RecentFiles::load(),
-            show_toolbar: false,
+            show_toolbar: true,
         }
     }
 }
@@ -333,28 +334,53 @@ impl HyprBoardApp {
             });
     }
 
+    fn icon(icon: &str) -> egui::RichText {
+        egui::RichText::new(icon).size(18.0)
+    }
+
+    fn toolbar_btn(ui: &mut egui::Ui, icon: egui::RichText, label: &str) -> egui::Response {
+        ui.button(icon).on_hover_text(label)
+    }
+
+    fn toolbar_btn_enabled(
+        ui: &mut egui::Ui,
+        enabled: bool,
+        icon: egui::RichText,
+        label: &str,
+    ) -> egui::Response {
+        ui.add_enabled(enabled, egui::Button::new(icon))
+            .on_hover_text(label)
+    }
+
     fn show_toolbar(&mut self, ctx: &Context) {
+        use egui_phosphor::regular::*;
+
         TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("Open").clicked() {
+                if Self::toolbar_btn(ui, Self::icon(FOLDER_OPEN), "Open (Ctrl+O)").clicked() {
                     self.try_open(ctx);
                 }
-                if ui.button("Save").clicked() {
+                if Self::toolbar_btn(ui, Self::icon(FLOPPY_DISK), "Save (Ctrl+S)").clicked() {
                     self.save();
                 }
 
                 ui.separator();
 
-                if ui.button("Undo").clicked() {
+                if Self::toolbar_btn(ui, Self::icon(ARROW_COUNTER_CLOCKWISE), "Undo (Ctrl+Z)")
+                    .clicked()
+                {
                     self.board.undo();
                 }
-                if ui.button("Redo").clicked() {
+                if Self::toolbar_btn(ui, Self::icon(ARROW_CLOCKWISE), "Redo (Ctrl+Shift+Z)")
+                    .clicked()
+                {
                     self.board.redo();
                 }
 
                 ui.separator();
 
-                if ui.button("Zoom Fit").clicked() {
+                if Self::toolbar_btn(ui, Self::icon(ARROWS_OUT), "Zoom to Fit (F)").clicked() {
                     self.board.fit_all();
                 }
 
@@ -362,32 +388,66 @@ impl HyprBoardApp {
 
                 let has_sel = self.board.has_selection();
 
-                ui.add_enabled(has_sel, egui::Button::new("Crop"));
-                if ui
-                    .add_enabled(has_sel, egui::Button::new("Flip H"))
-                    .clicked()
+                Self::toolbar_btn_enabled(ui, has_sel, Self::icon(CROP), "Crop (C)");
+                if Self::toolbar_btn_enabled(
+                    ui,
+                    has_sel,
+                    Self::icon(ARROWS_HORIZONTAL),
+                    "Flip Horizontal (Alt+H)",
+                )
+                .clicked()
                 {
                     self.board.flip_selected(true);
                 }
-                if ui
-                    .add_enabled(has_sel, egui::Button::new("Flip V"))
-                    .clicked()
+                if Self::toolbar_btn_enabled(
+                    ui,
+                    has_sel,
+                    Self::icon(ARROWS_VERTICAL),
+                    "Flip Vertical (Alt+V)",
+                )
+                .clicked()
                 {
                     self.board.flip_selected(false);
                 }
-                if ui
-                    .add_enabled(has_sel, egui::Button::new("Grayscale"))
-                    .clicked()
+                if Self::toolbar_btn_enabled(
+                    ui,
+                    has_sel,
+                    Self::icon(DROP_HALF_BOTTOM),
+                    "Grayscale (Alt+G)",
+                )
+                .clicked()
                 {
                     self.board.grayscale_selected();
                 }
 
                 ui.separator();
 
-                if ui.button("Export").clicked() {
+                let snap_label = if self.board.snap_to_grid {
+                    "Snap to Grid: ON (Ctrl+Shift+G)"
+                } else {
+                    "Snap to Grid: OFF (Ctrl+Shift+G)"
+                };
+                let snap_icon = if self.board.snap_to_grid {
+                    Self::icon(MAGNET_STRAIGHT).color(SELECTION_COLOR)
+                } else {
+                    Self::icon(MAGNET_STRAIGHT)
+                };
+                if Self::toolbar_btn(ui, snap_icon, snap_label).clicked() {
+                    self.board.snap_to_grid = !self.board.snap_to_grid;
+                }
+
+                ui.separator();
+
+                if Self::toolbar_btn(ui, Self::icon(EXPORT), "Export Region (Ctrl+E)").clicked() {
                     self.board.start_export_region();
                 }
+                if Self::toolbar_btn(ui, Self::icon(SELECTION), "Screen Capture (Shift+S)")
+                    .clicked()
+                {
+                    self.board.start_screen_capture(ctx);
+                }
             });
+            ui.add_space(4.0);
         });
     }
 
@@ -439,6 +499,14 @@ impl HyprBoardApp {
                     {
                         ui.close();
                         self.board.start_export_region();
+                    }
+
+                    if ui
+                        .add(egui::Button::new("Screen Capture").shortcut_text("Shift+S"))
+                        .clicked()
+                    {
+                        ui.close();
+                        self.board.start_screen_capture(ctx);
                     }
 
                     ui.separator();
@@ -690,6 +758,14 @@ impl HyprBoardApp {
                         {
                             close = true;
                             self.board.start_export_region();
+                        }
+
+                        if ui
+                            .add(egui::Button::new("Screen Capture").shortcut_text("Shift+S"))
+                            .clicked()
+                        {
+                            close = true;
+                            self.board.start_screen_capture(ctx);
                         }
 
                         if ui
