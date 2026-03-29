@@ -3,6 +3,7 @@ mod bee_import;
 mod board;
 mod clipboard;
 mod items;
+mod pdf_export;
 mod persistence;
 mod recent;
 mod util;

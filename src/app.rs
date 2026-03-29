@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use crate::board::Board;
 use crate::board::render::SELECTION_COLOR;
+use crate::pdf_export::{PageSize, PdfMode};
 use crate::persistence;
 use crate::recent::RecentFiles;
 use eframe::Frame;
@@ -26,10 +28,18 @@ pub struct HyprBoardApp {
     recent_files: RecentFiles,
     show_toolbar: bool,
     last_title: String,
+    show_pdf_dialog: bool,
+    pdf_mode: PdfMode,
+    pdf_page_size: PageSize,
+    pending_pdf: Option<Vec<u8>>,
+    pdf_tx: mpsc::Sender<Result<Vec<u8>, String>>,
+    pdf_rx: mpsc::Receiver<Result<Vec<u8>, String>>,
+    export_error: Option<String>,
 }
 
 impl Default for HyprBoardApp {
     fn default() -> Self {
+        let (pdf_tx, pdf_rx) = mpsc::channel();
         Self {
             board: Board::default(),
             context_menu_pos: None,
@@ -40,6 +50,13 @@ impl Default for HyprBoardApp {
             recent_files: RecentFiles::load(),
             show_toolbar: true,
             last_title: String::new(),
+            show_pdf_dialog: false,
+            pdf_mode: PdfMode::default(),
+            pdf_page_size: PageSize::default(),
+            pending_pdf: None,
+            pdf_tx,
+            pdf_rx,
+            export_error: None,
         }
     }
 }
@@ -82,6 +99,10 @@ impl eframe::App for HyprBoardApp {
         self.handle_dropped_files(ctx);
         self.show_drop_highlight(ctx);
         self.handle_pending_export();
+        self.poll_pdf_export();
+        self.handle_pending_pdf();
+        self.show_pdf_export_dialog(ctx);
+        self.show_export_error(ctx);
         self.handle_autosave();
 
         // Intercept close
@@ -457,6 +478,9 @@ impl HyprBoardApp {
                 if Self::toolbar_btn(ui, Self::icon(EXPORT), "Export Region (Ctrl+E)").clicked() {
                     self.board.start_export_region();
                 }
+                if Self::toolbar_btn(ui, Self::icon(FILE_PDF), "Export PDF").clicked() {
+                    self.show_pdf_dialog = true;
+                }
                 if Self::toolbar_btn(ui, Self::icon(SELECTION), "Screen Capture (Shift+S)")
                     .clicked()
                 {
@@ -515,6 +539,11 @@ impl HyprBoardApp {
                     {
                         ui.close();
                         self.board.start_export_region();
+                    }
+
+                    if ui.button("Export PDF...").clicked() {
+                        ui.close();
+                        self.show_pdf_dialog = true;
                     }
 
                     if ui
@@ -786,6 +815,11 @@ impl HyprBoardApp {
                             self.board.start_export_region();
                         }
 
+                        if ui.button("Export PDF...").clicked() {
+                            close = true;
+                            self.show_pdf_dialog = true;
+                        }
+
                         if ui
                             .add(egui::Button::new("Screen Capture").shortcut_text("Shift+S"))
                             .clicked()
@@ -933,6 +967,113 @@ impl HyprBoardApp {
                     log::info!("Exported to {}", path.display());
                 }
             }
+        }
+    }
+
+    fn show_pdf_export_dialog(&mut self, ctx: &Context) {
+        if !self.show_pdf_dialog {
+            return;
+        }
+
+        egui::Window::new("Export PDF")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Mode:");
+                    for mode in PdfMode::ALL {
+                        ui.selectable_value(&mut self.pdf_mode, mode, mode.label());
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Page Size:");
+                    for size in PageSize::ALL {
+                        ui.selectable_value(&mut self.pdf_page_size, size, size.label());
+                    }
+                });
+
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Export").clicked() {
+                        self.show_pdf_dialog = false;
+                        self.do_pdf_export();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.show_pdf_dialog = false;
+                    }
+                });
+            });
+    }
+
+    fn do_pdf_export(&mut self) {
+        let items = self.board.items().to_vec();
+        if items.is_empty() {
+            self.export_error = Some("No items to export".into());
+            return;
+        }
+
+        let mode = self.pdf_mode;
+        let page_size = self.pdf_page_size;
+        let tx = self.pdf_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::pdf_export::export_pdf(&items, mode, page_size);
+            let _ = tx.send(result);
+        });
+    }
+
+    fn poll_pdf_export(&mut self) {
+        if let Ok(result) = self.pdf_rx.try_recv() {
+            match result {
+                Ok(bytes) => self.pending_pdf = Some(bytes),
+                Err(e) => {
+                    log::error!("PDF export failed: {e}");
+                    self.export_error = Some(format!("PDF export failed: {e}"));
+                }
+            }
+        }
+    }
+
+    fn handle_pending_pdf(&mut self) {
+        if let Some(pdf) = self.pending_pdf.take() {
+            let path = rfd::FileDialog::new()
+                .add_filter("PDF", &["pdf"])
+                .set_file_name("export.pdf")
+                .save_file();
+            if let Some(path) = path {
+                if let Err(e) = std::fs::write(&path, &pdf) {
+                    log::error!("PDF write failed: {e}");
+                } else {
+                    log::info!("PDF exported to {}", path.display());
+                }
+            }
+        }
+    }
+
+    fn show_export_error(&mut self, ctx: &Context) {
+        let Some(ref msg) = self.export_error else {
+            return;
+        };
+        let msg = msg.clone();
+
+        let mut open = true;
+        egui::Window::new("Export Error")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(&msg);
+                ui.add_space(8.0);
+                if ui.button("OK").clicked() {
+                    self.export_error = None;
+                }
+            });
+
+        if !open {
+            self.export_error = None;
         }
     }
 
