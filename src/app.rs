@@ -210,8 +210,8 @@ impl HyprBoardApp {
         }
     }
 
-    fn load_board(&mut self, ctx: &Context, path: &std::path::Path) {
-        match persistence::load_board(path, ctx) {
+    fn load_board(&mut self, _ctx: &Context, path: &std::path::Path) {
+        match persistence::load_board(path) {
             Ok(items) => {
                 self.board.replace_items(items);
                 self.current_file = Some(path.to_path_buf());

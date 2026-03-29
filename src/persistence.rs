@@ -205,7 +205,7 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn load_board(path: &Path, _ctx: &egui::Context) -> rusqlite::Result<Vec<BoardItem>> {
+pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
     let conn = Connection::open(path)?;
 
     // Migrate if needed
@@ -414,9 +414,7 @@ mod tests {
 
         save_board(&path, &items).unwrap();
 
-        // Create a minimal egui context for load_board
-        let ctx = egui::Context::default();
-        let loaded = load_board(&path, &ctx).unwrap();
+        let loaded = load_board(&path).unwrap();
 
         assert_eq!(loaded.len(), 1);
         let BoardItem::Image(img) = &loaded[0] else {
@@ -461,8 +459,7 @@ mod tests {
 
         save_board(&path, &items).unwrap();
 
-        let ctx = egui::Context::default();
-        let loaded = load_board(&path, &ctx).unwrap();
+        let loaded = load_board(&path).unwrap();
 
         assert_eq!(loaded.len(), 1);
         let BoardItem::Text(txt) = &loaded[0] else {
@@ -504,8 +501,7 @@ mod tests {
 
         save_board(&path, &items).unwrap();
 
-        let ctx = egui::Context::default();
-        let loaded = load_board(&path, &ctx).unwrap();
+        let loaded = load_board(&path).unwrap();
 
         assert_eq!(loaded.len(), 2);
         assert!(matches!(&loaded[0], BoardItem::Image(_)));

@@ -240,11 +240,12 @@ impl BoardItem {
 
     pub fn toggle_grayscale(&mut self) {
         let Self::Image(img) = self else { return };
-        img.grayscale = !img.grayscale;
         // Re-decode and rebuild texture (only if already decoded)
-        if let Some(tex) = &mut img.texture
-            && let Ok(img_data) = image::load_from_memory(&img.original_bytes)
-        {
+        if let Some(tex) = &mut img.texture {
+            let Ok(img_data) = image::load_from_memory(&img.original_bytes) else {
+                return;
+            };
+            img.grayscale = !img.grayscale;
             let rgba = if img.grayscale {
                 img_data.grayscale().to_rgba8()
             } else {
@@ -255,6 +256,8 @@ impl BoardItem {
             let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
             img.original_size = Vec2::new(size[0] as f32, size[1] as f32);
             tex.set(color_image, egui::TextureOptions::LINEAR);
+        } else {
+            img.grayscale = !img.grayscale;
         }
     }
 }

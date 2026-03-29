@@ -11,7 +11,7 @@ use super::render::{
 use super::undo::{Command, UndoStack};
 
 const LAZY_DECODE_PER_FRAME: usize = 2;
-const SELECTION_COLOR: Color32 = Color32::from_rgb(100, 160, 255);
+use super::render::SELECTION_COLOR;
 
 // --- Interaction state ---
 
@@ -267,8 +267,6 @@ pub fn render_scene(
             hovered_label,
             items,
             selected,
-            undo_stack,
-            pending_zoom,
         ),
         InteractionState::DraggingItems {
             drag_started,
@@ -391,8 +389,6 @@ fn handle_idle(
     hovered_label: Option<(usize, usize)>,
     items: &mut Vec<BoardItem>,
     selected: &mut HashSet<usize>,
-    _undo_stack: &mut UndoStack,
-    _pending_zoom: &mut Option<Rect>,
 ) -> InteractionState {
     // Double-click on label: edit label
     if double_clicked && let Some((item_idx, label_idx)) = hovered_label {
@@ -966,7 +962,7 @@ fn handle_editing_label(
                 item_idx,
                 label_idx,
                 old_text,
-                new_text: text.clone(),
+                new_text: text,
             });
         }
         // Remove empty labels
