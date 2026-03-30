@@ -5,7 +5,7 @@ use std::sync::Arc;
 use egui::Vec2;
 use rusqlite::{Connection, params};
 
-use crate::items::{BoardItem, ImageItem, Transform, image_dimensions};
+use crate::items::{BoardItem, ImageItem, ItemId, Transform, image_dimensions};
 
 /// Import a .bee (BeeRef) file, returning board items.
 /// BeeRef uses SQLite with `items` table + `sqlar` table for image blobs.
@@ -26,6 +26,7 @@ pub fn import_bee(path: &Path) -> Result<Vec<BoardItem>, String> {
         .map_err(|e| format!("query items: {e}"))?;
 
     let mut items = Vec::new();
+    let mut next_id: u64 = 0;
 
     let rows = stmt
         .query_map([], |row| {
@@ -88,7 +89,9 @@ pub fn import_bee(path: &Path) -> Result<Vec<BoardItem>, String> {
                     }
                 });
 
+                next_id += 1;
                 items.push(BoardItem::Image(ImageItem {
+                    id: ItemId(next_id),
                     texture: None,
                     original_bytes: Arc::from(bytes),
                     original_size,
@@ -102,13 +105,14 @@ pub fn import_bee(path: &Path) -> Result<Vec<BoardItem>, String> {
                     grayscale: props.grayscale.unwrap_or(false),
                     flip_h,
                     flip_v: false,
-                    labels: Vec::new(),
                     border_color: egui::Color32::TRANSPARENT,
                 }));
             }
             "text" => {
+                next_id += 1;
                 let content = props.text.unwrap_or_default();
                 items.push(BoardItem::new_text(
+                    ItemId(next_id),
                     content,
                     Vec2::new(row.x as f32, row.y as f32),
                 ));

@@ -2,6 +2,94 @@ use std::sync::Arc;
 
 use egui::{Color32, ColorImage, Rect, TextureHandle, Vec2};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ItemId(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ConnectorId(pub u64);
+
+#[derive(Clone, Debug)]
+pub struct Connector {
+    pub id: ConnectorId,
+    pub from: ItemId,
+    pub to: ItemId,
+    pub color: Color32,
+    pub thickness: f32,
+}
+
+impl Connector {
+    pub fn new(id: ConnectorId, from: ItemId, to: ItemId) -> Self {
+        Self {
+            id,
+            from,
+            to,
+            color: Color32::from_gray(180),
+            thickness: 2.0,
+        }
+    }
+
+    /// Compute line endpoints clipped to bounding rect edges.
+    pub fn endpoints(&self, items: &[BoardItem]) -> Option<(egui::Pos2, egui::Pos2)> {
+        let from_item = items.iter().find(|i| i.item_id() == self.from)?;
+        let to_item = items.iter().find(|i| i.item_id() == self.to)?;
+        let from_rect = from_item.bounding_rect();
+        let to_rect = to_item.bounding_rect();
+        let from_center = from_rect.center();
+        let to_center = to_rect.center();
+        let start = clip_to_rect_edge(from_center, to_center, from_rect);
+        let end = clip_to_rect_edge(to_center, from_center, to_rect);
+        Some((start, end))
+    }
+
+    /// Point-to-segment distance for hit testing.
+    pub fn hit_test(&self, point: egui::Pos2, items: &[BoardItem], threshold: f32) -> bool {
+        let Some((a, b)) = self.endpoints(items) else {
+            return false;
+        };
+        point_to_segment_dist(point, a, b) <= threshold
+    }
+}
+
+fn clip_to_rect_edge(from: egui::Pos2, to: egui::Pos2, rect: Rect) -> egui::Pos2 {
+    let dir = to - from;
+    if dir.length_sq() < 0.001 {
+        return from;
+    }
+
+    let mut t_max = f32::INFINITY;
+
+    // X slab
+    if dir.x.abs() > 0.0001 {
+        let t1 = (rect.min.x - from.x) / dir.x;
+        let t2 = (rect.max.x - from.x) / dir.x;
+        t_max = t_max.min(t1.max(t2));
+    }
+
+    // Y slab
+    if dir.y.abs() > 0.0001 {
+        let t1 = (rect.min.y - from.y) / dir.y;
+        let t2 = (rect.max.y - from.y) / dir.y;
+        t_max = t_max.min(t1.max(t2));
+    }
+
+    // We want the exit point from the rect (t_max)
+    let t = t_max.clamp(0.0, 1.0);
+    egui::Pos2::new(from.x + dir.x * t, from.y + dir.y * t)
+}
+
+fn point_to_segment_dist(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let ab = b - a;
+    let ap = p - a;
+    let len_sq = ab.length_sq();
+    if len_sq < 0.001 {
+        return ap.length();
+    }
+    let t = (ap.x * ab.x + ap.y * ab.y) / len_sq;
+    let t = t.clamp(0.0, 1.0);
+    let proj = egui::Pos2::new(a.x + ab.x * t, a.y + ab.y * t);
+    (p - proj).length()
+}
+
 #[derive(Clone, Debug)]
 pub struct Transform {
     pub position: Vec2,
@@ -26,33 +114,9 @@ impl Transform {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Label {
-    pub text: String,
-    pub offset: Vec2,
-    pub font_size: f32,
-    pub color: Color32,
-}
-
-impl Label {
-    pub fn new(text: String, offset: Vec2) -> Self {
-        Self {
-            text,
-            offset,
-            font_size: 14.0,
-            color: Color32::WHITE,
-        }
-    }
-
-    pub fn bounding_rect(&self, image_pos: Vec2) -> Rect {
-        let pos = image_pos + self.offset;
-        let approx_width = (self.text.len() as f32 * self.font_size * 0.6).max(60.0);
-        Rect::from_min_size(pos.to_pos2(), Vec2::new(approx_width, self.font_size * 1.4))
-    }
-}
-
 #[derive(Clone)]
 pub struct ImageItem {
+    pub id: ItemId,
     pub texture: Option<TextureHandle>,
     pub original_bytes: Arc<[u8]>,
     pub original_size: Vec2,
@@ -62,18 +126,20 @@ pub struct ImageItem {
     pub grayscale: bool,
     pub flip_h: bool,
     pub flip_v: bool,
-    pub labels: Vec<Label>,
     pub border_color: Color32,
 }
 
 #[derive(Clone)]
 pub struct TextItem {
+    pub id: ItemId,
     pub content: String,
     pub font_size: f32,
     pub color: Color32,
     pub bg_color: Color32,
     pub border_color: Color32,
     pub transform: Transform,
+    /// Cached rendered size (updated each frame during draw).
+    pub cached_size: Vec2,
 }
 
 #[derive(Clone)]
@@ -84,12 +150,14 @@ pub enum BoardItem {
 
 impl BoardItem {
     pub fn new_image(
+        id: ItemId,
         texture: TextureHandle,
         original_bytes: Arc<[u8]>,
         original_size: Vec2,
         position: Vec2,
     ) -> Self {
         Self::Image(ImageItem {
+            id,
             texture: Some(texture),
             original_bytes,
             original_size,
@@ -99,20 +167,28 @@ impl BoardItem {
             grayscale: false,
             flip_h: false,
             flip_v: false,
-            labels: Vec::new(),
             border_color: Color32::TRANSPARENT,
         })
     }
 
-    pub fn new_text(content: String, position: Vec2) -> Self {
+    pub fn new_text(id: ItemId, content: String, position: Vec2) -> Self {
         Self::Text(TextItem {
+            id,
             content,
             font_size: 16.0,
             color: Color32::WHITE,
             bg_color: Color32::TRANSPARENT,
             border_color: Color32::TRANSPARENT,
             transform: Transform::default().with_position(position),
+            cached_size: Vec2::ZERO,
         })
+    }
+
+    pub fn item_id(&self) -> ItemId {
+        match self {
+            Self::Image(img) => img.id,
+            Self::Text(txt) => txt.id,
+        }
     }
 
     pub fn needs_decode(&self) -> bool {
@@ -156,10 +232,16 @@ impl BoardItem {
                 base * img.transform.scale
             }
             Self::Text(txt) => {
-                let line_count = txt.content.lines().count().max(1) as f32;
-                let max_line_len = txt.content.lines().map(|l| l.len()).max().unwrap_or(0) as f32;
-                let approx_width = max_line_len * txt.font_size * 0.6;
-                Vec2::new(approx_width, txt.font_size * 1.4 * line_count)
+                if txt.cached_size.x > 0.0 {
+                    // Include padding to match render
+                    txt.cached_size + Vec2::splat(8.0)
+                } else {
+                    let line_count = txt.content.lines().count().max(1) as f32;
+                    let max_line_len =
+                        txt.content.lines().map(|l| l.len()).max().unwrap_or(0) as f32;
+                    let approx_width = max_line_len * txt.font_size * 0.6;
+                    Vec2::new(approx_width, txt.font_size * 1.4 * line_count)
+                }
             }
         }
     }
@@ -269,26 +351,6 @@ impl BoardItem {
         }
     }
 
-    pub fn labels(&self) -> &[Label] {
-        match self {
-            Self::Image(img) => &img.labels,
-            _ => &[],
-        }
-    }
-
-    pub fn labels_mut(&mut self) -> Option<&mut Vec<Label>> {
-        match self {
-            Self::Image(img) => Some(&mut img.labels),
-            _ => None,
-        }
-    }
-
-    pub fn add_label(&mut self, label: Label) {
-        if let Self::Image(img) = self {
-            img.labels.push(label);
-        }
-    }
-
     pub fn toggle_flip(&mut self, horizontal: bool) {
         if let Self::Image(img) = self {
             if horizontal {
@@ -369,6 +431,7 @@ mod tests {
 
     fn make_image(pos: Vec2, size: Vec2) -> BoardItem {
         BoardItem::Image(ImageItem {
+            id: ItemId(0),
             texture: None,
             original_bytes: Arc::from(vec![0u8; 4]),
             original_size: size,
@@ -378,14 +441,13 @@ mod tests {
             grayscale: false,
             flip_h: false,
             flip_v: false,
-            labels: Vec::new(),
             border_color: Color32::TRANSPARENT,
         })
     }
 
     #[test]
     fn text_defaults() {
-        let item = BoardItem::new_text("hello".into(), Vec2::new(10.0, 20.0));
+        let item = BoardItem::new_text(ItemId(0), "hello".into(), Vec2::new(10.0, 20.0));
         assert_eq!(item.text_content().unwrap(), "hello");
         assert_eq!(item.transform().position, Vec2::new(10.0, 20.0));
         assert_eq!(item.transform().scale, Vec2::splat(1.0));
@@ -473,36 +535,15 @@ mod tests {
     }
 
     #[test]
-    fn labels_on_image() {
-        let mut item = make_image(Vec2::ZERO, Vec2::new(100.0, 100.0));
-        assert_eq!(item.labels().len(), 0);
-
-        item.add_label(Label::new("first".into(), Vec2::new(0.0, -20.0)));
-        assert_eq!(item.labels().len(), 1);
-        assert_eq!(item.labels()[0].text, "first");
-
-        item.add_label(Label::new("second".into(), Vec2::new(0.0, -40.0)));
-        assert_eq!(item.labels().len(), 2);
-    }
-
-    #[test]
-    fn labels_on_text_item_noop() {
-        let mut item = BoardItem::new_text("hi".into(), Vec2::ZERO);
-        item.add_label(Label::new("nope".into(), Vec2::ZERO));
-        assert_eq!(item.labels().len(), 0);
-        assert!(item.labels_mut().is_none());
-    }
-
-    #[test]
     fn set_text_content() {
-        let mut item = BoardItem::new_text("old".into(), Vec2::ZERO);
+        let mut item = BoardItem::new_text(ItemId(0), "old".into(), Vec2::ZERO);
         item.set_text_content("new".into());
         assert_eq!(item.text_content().unwrap(), "new");
     }
 
     #[test]
     fn crop_rect_on_text_is_none() {
-        let item = BoardItem::new_text("x".into(), Vec2::ZERO);
+        let item = BoardItem::new_text(ItemId(0), "x".into(), Vec2::ZERO);
         assert!(item.crop_rect().is_none());
         assert!(item.original_size().is_none());
     }
@@ -530,5 +571,67 @@ mod tests {
     #[test]
     fn image_dimensions_invalid() {
         assert!(image_dimensions(&[0, 1, 2, 3]).is_none());
+    }
+
+    fn make_image_with_id(id: u64, pos: Vec2, size: Vec2) -> BoardItem {
+        BoardItem::Image(ImageItem {
+            id: ItemId(id),
+            texture: None,
+            original_bytes: Arc::from(vec![0u8; 4]),
+            original_size: size,
+            transform: Transform::default().with_position(pos),
+            crop_rect: None,
+            opacity: 1.0,
+            grayscale: false,
+            flip_h: false,
+            flip_v: false,
+            border_color: Color32::TRANSPARENT,
+        })
+    }
+
+    #[test]
+    fn connector_endpoints() {
+        let items = vec![
+            make_image_with_id(1, Vec2::new(0.0, 0.0), Vec2::new(100.0, 100.0)),
+            make_image_with_id(2, Vec2::new(200.0, 0.0), Vec2::new(100.0, 100.0)),
+        ];
+        let conn = Connector::new(ConnectorId(1), ItemId(1), ItemId(2));
+        let (start, end) = conn.endpoints(&items).unwrap();
+        // Start should be on right edge of first item (100, 50)
+        assert!((start.x - 100.0).abs() < 1.0);
+        // End should be on left edge of second item (200, 50)
+        assert!((end.x - 200.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn connector_endpoints_missing_item() {
+        let items = vec![make_image(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+        let conn = Connector::new(ConnectorId(1), ItemId(0), ItemId(99));
+        assert!(conn.endpoints(&items).is_none());
+    }
+
+    #[test]
+    fn connector_hit_test() {
+        let items = vec![
+            make_image_with_id(1, Vec2::new(0.0, 0.0), Vec2::new(100.0, 100.0)),
+            make_image_with_id(2, Vec2::new(200.0, 0.0), Vec2::new(100.0, 100.0)),
+        ];
+        let conn = Connector::new(ConnectorId(1), ItemId(1), ItemId(2));
+        // Point on the line between items (midpoint, y=50)
+        assert!(conn.hit_test(egui::pos2(150.0, 50.0), &items, 5.0));
+        // Point far away
+        assert!(!conn.hit_test(egui::pos2(150.0, 200.0), &items, 5.0));
+    }
+
+    #[test]
+    fn point_to_segment_distance() {
+        let a = egui::pos2(0.0, 0.0);
+        let b = egui::pos2(10.0, 0.0);
+        // Point directly above midpoint
+        assert!((point_to_segment_dist(egui::pos2(5.0, 3.0), a, b) - 3.0).abs() < 0.01);
+        // Point at endpoint
+        assert!(point_to_segment_dist(egui::pos2(0.0, 0.0), a, b) < 0.01);
+        // Point beyond segment end
+        assert!((point_to_segment_dist(egui::pos2(15.0, 0.0), a, b) - 5.0).abs() < 0.01);
     }
 }

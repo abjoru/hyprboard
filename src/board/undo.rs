@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use egui::{Color32, Rect, Vec2};
 
-use crate::items::{BoardItem, Label};
+use crate::items::{BoardItem, Connector, ConnectorId};
 
 #[derive(Clone)]
 pub enum Command {
@@ -26,6 +26,7 @@ pub enum Command {
     },
     Delete {
         items: Vec<(usize, BoardItem)>,
+        removed_connectors: Vec<Connector>,
     },
     Add {
         count: usize,
@@ -55,26 +56,6 @@ pub enum Command {
         old_content: String,
         new_content: String,
     },
-    AddLabel {
-        item_idx: usize,
-    },
-    DeleteLabel {
-        item_idx: usize,
-        label_idx: usize,
-        label: Label,
-    },
-    MoveLabel {
-        item_idx: usize,
-        label_idx: usize,
-        old_offset: Vec2,
-        new_offset: Vec2,
-    },
-    EditLabel {
-        item_idx: usize,
-        label_idx: usize,
-        old_text: String,
-        new_text: String,
-    },
     TextStyle {
         indices: Vec<usize>,
         old_font_sizes: Vec<f32>,
@@ -88,6 +69,12 @@ pub enum Command {
         indices: Vec<usize>,
         old_colors: Vec<Color32>,
         new_colors: Vec<Color32>,
+    },
+    AddConnector {
+        id: ConnectorId,
+    },
+    DeleteConnector {
+        connector: Connector,
     },
 }
 
@@ -105,17 +92,27 @@ impl UndoStack {
         self.dirty = true;
     }
 
-    pub fn undo(&mut self, items: &mut Vec<BoardItem>, selected: &mut HashSet<usize>) {
+    pub fn undo(
+        &mut self,
+        items: &mut Vec<BoardItem>,
+        connectors: &mut Vec<Connector>,
+        selected: &mut HashSet<usize>,
+    ) {
         if let Some(cmd) = self.undos.pop() {
-            let reverse = Self::apply_reverse(&cmd, items, selected);
+            let reverse = Self::apply_reverse(&cmd, items, connectors, selected);
             self.redos.push(reverse);
             self.dirty = true;
         }
     }
 
-    pub fn redo(&mut self, items: &mut Vec<BoardItem>, selected: &mut HashSet<usize>) {
+    pub fn redo(
+        &mut self,
+        items: &mut Vec<BoardItem>,
+        connectors: &mut Vec<Connector>,
+        selected: &mut HashSet<usize>,
+    ) {
         if let Some(cmd) = self.redos.pop() {
-            let reverse = Self::apply_reverse(&cmd, items, selected);
+            let reverse = Self::apply_reverse(&cmd, items, connectors, selected);
             self.undos.push(reverse);
             self.dirty = true;
         }
@@ -124,6 +121,7 @@ impl UndoStack {
     fn apply_reverse(
         cmd: &Command,
         items: &mut Vec<BoardItem>,
+        connectors: &mut Vec<Connector>,
         selected: &mut HashSet<usize>,
     ) -> Command {
         match cmd {
@@ -182,7 +180,10 @@ impl UndoStack {
                     new_positions: old_positions.clone(),
                 }
             }
-            Command::Delete { items: deleted } => {
+            Command::Delete {
+                items: deleted,
+                removed_connectors,
+            } => {
                 let mut sorted = deleted.clone();
                 sorted.sort_by_key(|(idx, _)| *idx);
                 selected.clear();
@@ -190,15 +191,32 @@ impl UndoStack {
                     items.insert(idx, item);
                     selected.insert(idx);
                 }
+                // Restore cascade-removed connectors
+                connectors.extend(removed_connectors.iter().cloned());
                 Command::Add {
                     count: deleted.len(),
                 }
             }
             Command::Add { count } => {
                 let start = items.len().saturating_sub(*count);
+                // Cascade-remove connectors for items being removed
+                let deleted_ids: std::collections::HashSet<_> =
+                    items[start..].iter().map(|i| i.item_id()).collect();
+                let mut cascade = Vec::new();
+                connectors.retain(|c| {
+                    if deleted_ids.contains(&c.from) || deleted_ids.contains(&c.to) {
+                        cascade.push(c.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
                 let removed: Vec<_> = (start..items.len()).zip(items.drain(start..)).collect();
                 selected.clear();
-                Command::Delete { items: removed }
+                Command::Delete {
+                    items: removed,
+                    removed_connectors: cascade,
+                }
             }
             Command::ZOrder { old_order } => {
                 let mut reordered = Vec::with_capacity(items.len());
@@ -287,81 +305,6 @@ impl UndoStack {
                     new_content: old_content.clone(),
                 }
             }
-            Command::AddLabel { item_idx } => {
-                let Some(item) = items.get_mut(*item_idx) else {
-                    return Command::AddLabel {
-                        item_idx: *item_idx,
-                    };
-                };
-                let Some(labels) = item.labels_mut() else {
-                    return Command::AddLabel {
-                        item_idx: *item_idx,
-                    };
-                };
-                let Some(label) = labels.pop() else {
-                    return Command::AddLabel {
-                        item_idx: *item_idx,
-                    };
-                };
-                let label_count = items[*item_idx].labels().len();
-                Command::DeleteLabel {
-                    item_idx: *item_idx,
-                    label_idx: label_count,
-                    label,
-                }
-            }
-            Command::DeleteLabel {
-                item_idx,
-                label_idx,
-                label,
-            } => {
-                if let Some(item) = items.get_mut(*item_idx)
-                    && let Some(labels) = item.labels_mut()
-                {
-                    labels.insert(*label_idx, label.clone());
-                }
-                Command::AddLabel {
-                    item_idx: *item_idx,
-                }
-            }
-            Command::MoveLabel {
-                item_idx,
-                label_idx,
-                old_offset,
-                new_offset,
-            } => {
-                if let Some(item) = items.get_mut(*item_idx)
-                    && let Some(labels) = item.labels_mut()
-                    && let Some(label) = labels.get_mut(*label_idx)
-                {
-                    label.offset = *old_offset;
-                }
-                Command::MoveLabel {
-                    item_idx: *item_idx,
-                    label_idx: *label_idx,
-                    old_offset: *new_offset,
-                    new_offset: *old_offset,
-                }
-            }
-            Command::EditLabel {
-                item_idx,
-                label_idx,
-                old_text,
-                new_text,
-            } => {
-                if let Some(item) = items.get_mut(*item_idx)
-                    && let Some(labels) = item.labels_mut()
-                    && let Some(label) = labels.get_mut(*label_idx)
-                {
-                    label.text = old_text.clone();
-                }
-                Command::EditLabel {
-                    item_idx: *item_idx,
-                    label_idx: *label_idx,
-                    old_text: new_text.clone(),
-                    new_text: old_text.clone(),
-                }
-            }
             Command::BorderColor {
                 indices,
                 old_colors,
@@ -404,6 +347,19 @@ impl UndoStack {
                     new_bg_colors: old_bg_colors.clone(),
                 }
             }
+            Command::AddConnector { id } => {
+                if let Some(pos) = connectors.iter().position(|c| c.id == *id) {
+                    let connector = connectors.remove(pos);
+                    Command::DeleteConnector { connector }
+                } else {
+                    Command::AddConnector { id: *id }
+                }
+            }
+            Command::DeleteConnector { connector } => {
+                let id = connector.id;
+                connectors.push(connector.clone());
+                Command::AddConnector { id }
+            }
         }
     }
 }
@@ -412,15 +368,15 @@ impl UndoStack {
 mod tests {
     use std::sync::Arc;
 
-    use crate::items::Transform;
+    use crate::items::{ImageItem, ItemId, Transform};
 
     use super::*;
 
     fn make_test_items() -> Vec<BoardItem> {
         vec![
-            BoardItem::new_text("A".into(), Vec2::new(0.0, 0.0)),
-            BoardItem::new_text("B".into(), Vec2::new(100.0, 0.0)),
-            BoardItem::new_text("C".into(), Vec2::new(200.0, 0.0)),
+            BoardItem::new_text(ItemId(1), "A".into(), Vec2::new(0.0, 0.0)),
+            BoardItem::new_text(ItemId(2), "B".into(), Vec2::new(100.0, 0.0)),
+            BoardItem::new_text(ItemId(3), "C".into(), Vec2::new(200.0, 0.0)),
         ]
     }
 
@@ -428,6 +384,7 @@ mod tests {
     fn undo_move() {
         let mut items = make_test_items();
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         // Move items 0 and 1 by (10, 20)
@@ -443,12 +400,12 @@ mod tests {
         assert_eq!(items[1].transform().position, Vec2::new(110.0, 20.0));
 
         // Undo
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items[0].transform().position, Vec2::new(0.0, 0.0));
         assert_eq!(items[1].transform().position, Vec2::new(100.0, 0.0));
 
         // Redo
-        stack.redo(&mut items, &mut selected);
+        stack.redo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items[0].transform().position, Vec2::new(10.0, 20.0));
         assert_eq!(items[1].transform().position, Vec2::new(110.0, 20.0));
     }
@@ -457,12 +414,14 @@ mod tests {
     fn undo_delete() {
         let mut items = make_test_items();
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         // Delete item 1 ("B")
         let removed = items.remove(1);
         stack.push(Command::Delete {
             items: vec![(1, removed)],
+            removed_connectors: Vec::new(),
         });
 
         assert_eq!(items.len(), 2);
@@ -470,7 +429,7 @@ mod tests {
         assert_eq!(items[1].text_content().unwrap(), "C");
 
         // Undo — restore "B" at index 1
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items.len(), 3);
         assert_eq!(items[1].text_content().unwrap(), "B");
         assert!(selected.contains(&1));
@@ -480,17 +439,22 @@ mod tests {
     fn undo_add() {
         let mut items = make_test_items();
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
-        items.push(BoardItem::new_text("D".into(), Vec2::new(300.0, 0.0)));
+        items.push(BoardItem::new_text(
+            ItemId(4),
+            "D".into(),
+            Vec2::new(300.0, 0.0),
+        ));
         stack.push(Command::Add { count: 1 });
 
         assert_eq!(items.len(), 4);
 
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items.len(), 3);
 
-        stack.redo(&mut items, &mut selected);
+        stack.redo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items.len(), 4);
         assert_eq!(items[3].text_content().unwrap(), "D");
     }
@@ -499,6 +463,7 @@ mod tests {
     fn undo_zorder() {
         let mut items = make_test_items();
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         // Reverse order: [C, B, A]
@@ -511,7 +476,7 @@ mod tests {
         assert_eq!(items[2].text_content().unwrap(), "A");
 
         // Undo — restore original order
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items[0].text_content().unwrap(), "A");
         assert_eq!(items[1].text_content().unwrap(), "B");
         assert_eq!(items[2].text_content().unwrap(), "C");
@@ -519,9 +484,10 @@ mod tests {
 
     #[test]
     fn undo_opacity() {
-        let mut items = vec![BoardItem::new_text("X".into(), Vec2::ZERO)];
+        let mut items = vec![BoardItem::new_text(ItemId(0), "X".into(), Vec2::ZERO)];
         // Text items have fixed 1.0 opacity, but we test the mechanism
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         stack.push(Command::Opacity {
@@ -530,7 +496,7 @@ mod tests {
             new_values: vec![0.5],
         });
 
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         // Opacity on text items is a no-op, but command mechanics work
         assert!(stack.redos.len() == 1);
     }
@@ -539,6 +505,7 @@ mod tests {
     fn push_clears_redos() {
         let mut items = make_test_items();
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         stack.push(Command::Move {
@@ -547,7 +514,7 @@ mod tests {
         });
         items[0].transform_mut().position += Vec2::new(5.0, 0.0);
 
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert_eq!(stack.redos.len(), 1);
 
         // New push should clear redos
@@ -559,7 +526,8 @@ mod tests {
     }
 
     fn make_image_item(pos: Vec2, size: Vec2) -> BoardItem {
-        BoardItem::Image(crate::items::ImageItem {
+        BoardItem::Image(ImageItem {
+            id: ItemId(0),
             texture: None,
             original_bytes: Arc::from(vec![0u8; 4]),
             original_size: size,
@@ -569,7 +537,6 @@ mod tests {
             grayscale: false,
             flip_h: false,
             flip_v: false,
-            labels: Vec::new(),
             border_color: Color32::TRANSPARENT,
         })
     }
@@ -581,6 +548,7 @@ mod tests {
             Vec2::new(100.0, 100.0),
         )];
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         let old_scale = items[0].transform().scale;
@@ -596,11 +564,11 @@ mod tests {
             new_positions: vec![Vec2::new(5.0, 5.0)],
         });
 
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items[0].transform().scale, Vec2::splat(1.0));
         assert_eq!(items[0].transform().position, Vec2::new(10.0, 10.0));
 
-        stack.redo(&mut items, &mut selected);
+        stack.redo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items[0].transform().scale, Vec2::splat(2.0));
         assert_eq!(items[0].transform().position, Vec2::new(5.0, 5.0));
     }
@@ -609,6 +577,7 @@ mod tests {
     fn undo_rotate() {
         let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         items[0].transform_mut().rotation = 1.5;
@@ -620,10 +589,10 @@ mod tests {
             new_positions: vec![Vec2::ZERO],
         });
 
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert!((items[0].transform().rotation).abs() < 0.001);
 
-        stack.redo(&mut items, &mut selected);
+        stack.redo(&mut items, &mut connectors, &mut selected);
         assert!((items[0].transform().rotation - 1.5).abs() < 0.001);
     }
 
@@ -631,6 +600,7 @@ mod tests {
     fn undo_crop() {
         let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         let crop = Rect::from_min_size(egui::pos2(10.0, 10.0), Vec2::new(50.0, 50.0));
@@ -641,17 +611,18 @@ mod tests {
             new_rect: Some(crop),
         });
 
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert!(items[0].crop_rect().is_none());
 
-        stack.redo(&mut items, &mut selected);
+        stack.redo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items[0].crop_rect().unwrap(), crop);
     }
 
     #[test]
     fn undo_edit_text() {
-        let mut items = vec![BoardItem::new_text("hello".into(), Vec2::ZERO)];
+        let mut items = vec![BoardItem::new_text(ItemId(0), "hello".into(), Vec2::ZERO)];
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         items[0].set_text_content("world".into());
@@ -661,10 +632,10 @@ mod tests {
             new_content: "world".into(),
         });
 
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items[0].text_content().unwrap(), "hello");
 
-        stack.redo(&mut items, &mut selected);
+        stack.redo(&mut items, &mut connectors, &mut selected);
         assert_eq!(items[0].text_content().unwrap(), "world");
     }
 
@@ -672,6 +643,7 @@ mod tests {
     fn undo_flip() {
         let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         items[0].toggle_flip(true);
@@ -682,10 +654,10 @@ mod tests {
 
         assert!(matches!(&items[0], BoardItem::Image(img) if img.flip_h));
 
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert!(matches!(&items[0], BoardItem::Image(img) if !img.flip_h));
 
-        stack.redo(&mut items, &mut selected);
+        stack.redo(&mut items, &mut connectors, &mut selected);
         assert!(matches!(&items[0], BoardItem::Image(img) if img.flip_h));
     }
 
@@ -693,6 +665,7 @@ mod tests {
     fn undo_grayscale() {
         let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
         // toggle_grayscale without texture just flips the flag
@@ -701,94 +674,73 @@ mod tests {
 
         assert!(matches!(&items[0], BoardItem::Image(img) if img.grayscale));
 
-        stack.undo(&mut items, &mut selected);
+        stack.undo(&mut items, &mut connectors, &mut selected);
         assert!(matches!(&items[0], BoardItem::Image(img) if !img.grayscale));
     }
 
     #[test]
-    fn undo_add_label() {
-        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
+    fn undo_add_connector() {
+        let mut items = make_test_items();
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
-        items[0].add_label(Label::new("test".into(), Vec2::new(0.0, -20.0)));
-        stack.push(Command::AddLabel { item_idx: 0 });
+        let id = ConnectorId(100);
+        connectors.push(Connector::new(id, ItemId(1), ItemId(2)));
+        stack.push(Command::AddConnector { id });
 
-        assert_eq!(items[0].labels().len(), 1);
+        assert_eq!(connectors.len(), 1);
 
-        stack.undo(&mut items, &mut selected);
-        assert_eq!(items[0].labels().len(), 0);
+        stack.undo(&mut items, &mut connectors, &mut selected);
+        assert_eq!(connectors.len(), 0);
 
-        stack.redo(&mut items, &mut selected);
-        assert_eq!(items[0].labels().len(), 1);
-        assert_eq!(items[0].labels()[0].text, "test");
+        stack.redo(&mut items, &mut connectors, &mut selected);
+        assert_eq!(connectors.len(), 1);
+        assert_eq!(connectors[0].id, id);
     }
 
     #[test]
-    fn undo_delete_label() {
-        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
-        items[0].add_label(Label::new("keep".into(), Vec2::ZERO));
+    fn undo_delete_connector() {
+        let mut items = make_test_items();
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = Vec::new();
         let mut stack = UndoStack::default();
 
-        let label = items[0].labels()[0].clone();
-        items[0].labels_mut().unwrap().remove(0);
-        stack.push(Command::DeleteLabel {
-            item_idx: 0,
-            label_idx: 0,
-            label,
+        let conn = Connector::new(ConnectorId(50), ItemId(1), ItemId(2));
+        stack.push(Command::DeleteConnector {
+            connector: conn.clone(),
         });
 
-        assert_eq!(items[0].labels().len(), 0);
+        assert_eq!(connectors.len(), 0);
 
-        stack.undo(&mut items, &mut selected);
-        assert_eq!(items[0].labels().len(), 1);
-        assert_eq!(items[0].labels()[0].text, "keep");
+        stack.undo(&mut items, &mut connectors, &mut selected);
+        assert_eq!(connectors.len(), 1);
+        assert_eq!(connectors[0].from, ItemId(1));
+
+        stack.redo(&mut items, &mut connectors, &mut selected);
+        assert_eq!(connectors.len(), 0);
     }
 
     #[test]
-    fn undo_move_label() {
-        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
-        items[0].add_label(Label::new("lbl".into(), Vec2::new(0.0, -20.0)));
+    fn delete_item_cascades_connectors() {
+        let mut items = make_test_items(); // A(1), B(2), C(3)
         let mut selected = HashSet::new();
+        let mut connectors: Vec<Connector> = vec![
+            Connector::new(ConnectorId(10), ItemId(1), ItemId(2)),
+            Connector::new(ConnectorId(11), ItemId(2), ItemId(3)),
+        ];
         let mut stack = UndoStack::default();
 
-        let old_offset = Vec2::new(0.0, -20.0);
-        let new_offset = Vec2::new(50.0, -30.0);
-        items[0].labels_mut().unwrap()[0].offset = new_offset;
-        stack.push(Command::MoveLabel {
-            item_idx: 0,
-            label_idx: 0,
-            old_offset,
-            new_offset,
+        // Delete item B (index 1, ItemId(2)) — both connectors reference it
+        let removed = items.remove(1);
+        stack.push(Command::Delete {
+            items: vec![(1, removed)],
+            removed_connectors: Vec::new(),
         });
 
-        stack.undo(&mut items, &mut selected);
-        assert_eq!(items[0].labels()[0].offset, old_offset);
-
-        stack.redo(&mut items, &mut selected);
-        assert_eq!(items[0].labels()[0].offset, new_offset);
-    }
-
-    #[test]
-    fn undo_edit_label() {
-        let mut items = vec![make_image_item(Vec2::ZERO, Vec2::new(100.0, 100.0))];
-        items[0].add_label(Label::new("old".into(), Vec2::ZERO));
-        let mut selected = HashSet::new();
-        let mut stack = UndoStack::default();
-
-        items[0].labels_mut().unwrap()[0].text = "new".into();
-        stack.push(Command::EditLabel {
-            item_idx: 0,
-            label_idx: 0,
-            old_text: "old".into(),
-            new_text: "new".into(),
-        });
-
-        stack.undo(&mut items, &mut selected);
-        assert_eq!(items[0].labels()[0].text, "old");
-
-        stack.redo(&mut items, &mut selected);
-        assert_eq!(items[0].labels()[0].text, "new");
+        // Undo the delete — restores B
+        stack.undo(&mut items, &mut connectors, &mut selected);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[1].text_content().unwrap(), "B");
     }
 }

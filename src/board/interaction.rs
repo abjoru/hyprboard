@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::clipboard;
-use crate::items::BoardItem;
+use crate::items::{BoardItem, Connector, ConnectorId, ItemId};
 
 use super::render::{
     HANDLE_SIZE, HandleHit, ROT_HANDLE_OFFSET, draw_grid, draw_item, draw_selection_handles,
@@ -48,15 +48,8 @@ pub enum InteractionState {
     EditingText {
         idx: usize,
     },
-    DraggingLabel {
-        item_idx: usize,
-        label_idx: usize,
-        start_offset: Vec2,
-        last_pointer: Pos2,
-    },
-    EditingLabel {
-        item_idx: usize,
-        label_idx: usize,
+    Connecting {
+        from: ItemId,
     },
     ExportingRegion {
         start: Option<Pos2>,
@@ -121,17 +114,20 @@ fn screen_to_scene(ui: &Ui, screen_pos: Pos2) -> Pos2 {
 pub fn render_scene(
     ui: &mut Ui,
     items: &mut Vec<BoardItem>,
+    connectors: &mut Vec<Connector>,
     selected: &mut HashSet<usize>,
+    selected_connectors: &mut HashSet<ConnectorId>,
     interaction: &mut InteractionState,
     undo_stack: &mut UndoStack,
     show_grid: bool,
     grid_size: f32,
     snap_to_grid: bool,
     visible_rect: Rect,
-    next_texture_id: &mut u64,
+    next_id: &mut u64,
     pending_export: &mut Option<Vec<u8>>,
     suppress_input: bool,
     pending_zoom: &mut Option<Rect>,
+    connect_mode: &mut bool,
 ) {
     let pointer_pos = if suppress_input {
         None
@@ -164,8 +160,8 @@ pub fn render_scene(
             break;
         }
         if item.needs_decode() && item.bounding_rect().intersects(cull_rect) {
-            *next_texture_id += 1;
-            let name = format!("lazy-{}", next_texture_id);
+            *next_id += 1;
+            let name = format!("lazy-{}", next_id);
             if item.ensure_texture(ui.ctx(), &name) {
                 decoded += 1;
             }
@@ -193,65 +189,70 @@ pub fn render_scene(
         }
     }
 
-    // Label hit testing (labels render on top of images)
-    let mut hovered_label: Option<(usize, usize)> = None;
+    // Draw items (with frustum culling)
+    for &(idx, _) in &item_responses {
+        draw_item(ui, &mut items[idx], selected.contains(&idx));
+    }
+
+    // Draw connectors (after items, before selection handles)
+    for conn in connectors.iter() {
+        if let Some((start, end)) = conn.endpoints(items) {
+            let color = if selected_connectors.contains(&conn.id) {
+                SELECTION_COLOR
+            } else {
+                conn.color
+            };
+            ui.painter()
+                .line_segment([start, end], Stroke::new(conn.thickness, color));
+        }
+    }
+
+    // Draw preview line during Connecting state
+    if let InteractionState::Connecting { from } = interaction
+        && let Some(pointer) = pointer_pos
+        && let Some(from_item) = items.iter().find(|i| i.item_id() == *from)
+    {
+        let from_center = from_item.bounding_rect().center();
+        ui.painter().line_segment(
+            [from_center, pointer],
+            Stroke::new(2.0, Color32::from_gray(180).gamma_multiply(0.5)),
+        );
+    }
+
+    // Connector hit testing
+    let mut hovered_connector: Option<ConnectorId> = None;
     if let Some(pointer) = pointer_pos {
-        for (item_idx, item) in items.iter().enumerate().rev() {
-            if !item.bounding_rect().intersects(cull_rect) {
-                continue;
-            }
-            let image_pos = item.transform().position;
-            for (label_idx, label) in item.labels().iter().enumerate().rev() {
-                if label.bounding_rect(image_pos).contains(pointer) {
-                    hovered_label = Some((item_idx, label_idx));
-                    break;
-                }
-            }
-            if hovered_label.is_some() {
+        for conn in connectors.iter().rev() {
+            if conn.hit_test(pointer, items, 5.0) {
+                hovered_connector = Some(conn.id);
                 break;
             }
         }
     }
 
-    // Draw items (with frustum culling)
-    for &(idx, _) in &item_responses {
-        draw_item(ui, &items[idx], selected.contains(&idx));
-    }
-
     // Draw selection handles, detect handle hover
     let handle_hit = draw_selection_handles(ui, items, selected, pointer_pos);
 
-    if (hovered_item.is_some() || hovered_label.is_some()) && handle_hit.is_none() {
+    if hovered_item.is_some() && handle_hit.is_none() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    // Global double-click: edit label, or zoom to fit (skip during editing/cropping/exporting)
+    // Global double-click: zoom to fit (skip during editing/cropping/exporting)
     let suppress_dblclick = matches!(
         interaction,
         InteractionState::EditingText { .. }
-            | InteractionState::EditingLabel { .. }
+            | InteractionState::Connecting { .. }
             | InteractionState::Cropping { .. }
             | InteractionState::ExportingRegion { .. }
     );
-    if double_clicked && !suppress_dblclick {
-        if let Some((item_idx, label_idx)) = hovered_label {
-            selected.clear();
-            selected.insert(item_idx);
-            *interaction = InteractionState::EditingLabel {
-                item_idx,
-                label_idx,
-            };
-            return;
+    if double_clicked && !suppress_dblclick && hovered_item.is_none() {
+        let rects = items.iter().map(|item| item.bounding_rect());
+        if let Some(first) = rects.clone().next() {
+            let all = rects.fold(first, |acc, r| acc.union(r));
+            *pending_zoom = Some(all.expand(50.0));
         }
-        if hovered_item.is_none() {
-            let rects = items.iter().map(|item| item.bounding_rect());
-            if let Some(first) = rects.clone().next() {
-                let all = rects.fold(first, |acc, r| acc.union(r));
-                *pending_zoom = Some(all.expand(50.0));
-            }
-            *interaction = InteractionState::Idle;
-            return;
-        }
+        *interaction = InteractionState::Idle;
+        return;
     }
 
     // State machine
@@ -264,9 +265,12 @@ pub fn render_scene(
             pointer_pos,
             &handle_hit,
             hovered_item,
-            hovered_label,
+            hovered_connector,
             items,
             selected,
+            selected_connectors,
+            *connect_mode,
+            undo_stack,
         ),
         InteractionState::DraggingItems {
             drag_started,
@@ -345,25 +349,16 @@ pub fn render_scene(
             undo_stack,
         ),
         InteractionState::EditingText { idx } => handle_editing_text(ui, idx, items, undo_stack),
-        InteractionState::DraggingLabel {
-            item_idx,
-            label_idx,
-            start_offset,
-            last_pointer,
-        } => handle_dragging_label(
-            primary_released,
-            pointer_pos,
-            item_idx,
-            label_idx,
-            start_offset,
-            last_pointer,
+        InteractionState::Connecting { from } => handle_connecting(
+            primary_pressed,
+            hovered_item,
+            from,
             items,
+            connectors,
             undo_stack,
+            next_id,
+            connect_mode,
         ),
-        InteractionState::EditingLabel {
-            item_idx,
-            label_idx,
-        } => handle_editing_label(ui, item_idx, label_idx, items, undo_stack),
         InteractionState::ExportingRegion { start, current } => handle_export_region(
             ui,
             primary_pressed,
@@ -386,39 +381,45 @@ fn handle_idle(
     pointer_pos: Option<Pos2>,
     handle_hit: &Option<HandleHit>,
     hovered_item: Option<usize>,
-    hovered_label: Option<(usize, usize)>,
+    hovered_connector: Option<ConnectorId>,
     items: &mut Vec<BoardItem>,
     selected: &mut HashSet<usize>,
+    selected_connectors: &mut HashSet<ConnectorId>,
+    connect_mode: bool,
+    _undo_stack: &mut UndoStack,
 ) -> InteractionState {
-    // Double-click on label: edit label
-    if double_clicked && let Some((item_idx, label_idx)) = hovered_label {
-        selected.clear();
-        selected.insert(item_idx);
-        return InteractionState::EditingLabel {
-            item_idx,
-            label_idx,
-        };
+    // Connect mode: clicking an item starts connection
+    if connect_mode && primary_pressed && !double_clicked {
+        if let Some(idx) = hovered_item {
+            let from = items[idx].item_id();
+            return InteractionState::Connecting { from };
+        }
+        return InteractionState::Idle;
     }
 
-    // Single click on label: start dragging
+    // Click on connector: select it
     if primary_pressed
         && !double_clicked
-        && let Some((item_idx, label_idx)) = hovered_label
-        && let Some(pointer) = pointer_pos
+        && hovered_item.is_none()
+        && let Some(cid) = hovered_connector
     {
-        let start_offset = items
-            .get(item_idx)
-            .and_then(|item| item.labels().get(label_idx))
-            .map(|l| l.offset)
-            .unwrap_or(Vec2::ZERO);
         selected.clear();
-        selected.insert(item_idx);
-        return InteractionState::DraggingLabel {
-            item_idx,
-            label_idx,
-            start_offset,
-            last_pointer: pointer,
-        };
+        if shift_held {
+            if selected_connectors.contains(&cid) {
+                selected_connectors.remove(&cid);
+            } else {
+                selected_connectors.insert(cid);
+            }
+        } else {
+            selected_connectors.clear();
+            selected_connectors.insert(cid);
+        }
+        return InteractionState::Idle;
+    }
+
+    // Clicking an item clears connector selection
+    if primary_pressed && hovered_item.is_some() {
+        selected_connectors.clear();
     }
 
     // Double-click text: edit
@@ -848,6 +849,7 @@ fn handle_editing_text(
             let removed = items.remove(idx);
             undo_stack.push(Command::Delete {
                 items: vec![(idx, removed)],
+                removed_connectors: Vec::new(),
             });
         }
         return InteractionState::Idle;
@@ -857,143 +859,34 @@ fn handle_editing_text(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_dragging_label(
-    primary_released: bool,
-    pointer_pos: Option<Pos2>,
-    item_idx: usize,
-    label_idx: usize,
-    start_offset: Vec2,
-    last_pointer: Pos2,
-    items: &mut [BoardItem],
+fn handle_connecting(
+    primary_pressed: bool,
+    hovered_item: Option<usize>,
+    from: ItemId,
+    items: &[BoardItem],
+    connectors: &mut Vec<Connector>,
     undo_stack: &mut UndoStack,
+    next_id: &mut u64,
+    connect_mode: &mut bool,
 ) -> InteractionState {
-    if primary_released {
-        let current_offset = items
-            .get(item_idx)
-            .and_then(|item| item.labels().get(label_idx))
-            .map(|l| l.offset)
-            .unwrap_or(start_offset);
-        if (current_offset - start_offset).length_sq() > 0.01 {
-            undo_stack.push(Command::MoveLabel {
-                item_idx,
-                label_idx,
-                old_offset: start_offset,
-                new_offset: current_offset,
-            });
-        }
-        return InteractionState::Idle;
-    }
-
-    if let Some(mouse) = pointer_pos {
-        let delta = mouse - last_pointer;
-        if delta.length_sq() > 0.0 {
-            if let Some(item) = items.get_mut(item_idx)
-                && let Some(labels) = item.labels_mut()
-                && let Some(label) = labels.get_mut(label_idx)
-            {
-                label.offset += delta;
+    if primary_pressed {
+        if let Some(idx) = hovered_item {
+            let to = items[idx].item_id();
+            let duplicate = connectors
+                .iter()
+                .any(|c| (c.from == from && c.to == to) || (c.from == to && c.to == from));
+            if to != from && !duplicate {
+                *next_id += 1;
+                let id = ConnectorId(*next_id);
+                let connector = Connector::new(id, from, to);
+                connectors.push(connector);
+                undo_stack.push(Command::AddConnector { id });
             }
-            return InteractionState::DraggingLabel {
-                item_idx,
-                label_idx,
-                start_offset,
-                last_pointer: mouse,
-            };
         }
-    }
-
-    InteractionState::DraggingLabel {
-        item_idx,
-        label_idx,
-        start_offset,
-        last_pointer,
-    }
-}
-
-#[allow(clippy::ptr_arg)]
-fn handle_editing_label(
-    ui: &mut Ui,
-    item_idx: usize,
-    label_idx: usize,
-    items: &mut Vec<BoardItem>,
-    undo_stack: &mut UndoStack,
-) -> InteractionState {
-    let Some(item) = items.get(item_idx) else {
-        return InteractionState::Idle;
-    };
-    let image_pos = item.transform().position;
-    let Some(label) = item.labels().get(label_idx) else {
-        return InteractionState::Idle;
-    };
-    let old_text = label.text.clone();
-    let label_pos = image_pos + label.offset;
-    let font_size = label.font_size;
-
-    let text_edit_id = egui::Id::new("label_edit_inline")
-        .with(item_idx)
-        .with(label_idx);
-    let mut text = old_text.clone();
-
-    let resp = ui.put(
-        Rect::from_min_size(label_pos.to_pos2(), Vec2::new(200.0, font_size * 2.0)),
-        egui::TextEdit::singleline(&mut text)
-            .id(text_edit_id)
-            .font(egui::FontId::proportional(font_size))
-            .desired_width(200.0),
-    );
-
-    if let Some(item) = items.get_mut(item_idx)
-        && let Some(labels) = item.labels_mut()
-        && let Some(label) = labels.get_mut(label_idx)
-    {
-        label.text = text.clone();
-    }
-
-    if !resp.has_focus() {
-        resp.request_focus();
-    }
-
-    let enter = ui.input(|i| i.key_pressed(Key::Enter));
-    let escape = ui.input(|i| i.key_pressed(Key::Escape));
-    if enter || escape || resp.lost_focus() {
-        if escape {
-            if let Some(item) = items.get_mut(item_idx)
-                && let Some(labels) = item.labels_mut()
-                && let Some(label) = labels.get_mut(label_idx)
-            {
-                label.text = old_text;
-            }
-        } else if text != old_text {
-            undo_stack.push(Command::EditLabel {
-                item_idx,
-                label_idx,
-                old_text,
-                new_text: text,
-            });
-        }
-        // Remove empty labels
-        let is_empty = items
-            .get(item_idx)
-            .and_then(|item| item.labels().get(label_idx))
-            .is_some_and(|l| l.text.is_empty());
-        if is_empty
-            && let Some(item) = items.get_mut(item_idx)
-            && let Some(labels) = item.labels_mut()
-        {
-            let label = labels.remove(label_idx);
-            undo_stack.push(Command::DeleteLabel {
-                item_idx,
-                label_idx,
-                label,
-            });
-        }
+        *connect_mode = false;
         return InteractionState::Idle;
     }
-
-    InteractionState::EditingLabel {
-        item_idx,
-        label_idx,
-    }
+    InteractionState::Connecting { from }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -100,13 +100,12 @@ pub fn draw_selection_handles(
     hit
 }
 
-pub fn draw_item(ui: &mut Ui, item: &BoardItem, is_selected: bool) {
+pub fn draw_item(ui: &mut Ui, item: &mut BoardItem, is_selected: bool) {
     let rotation = item.transform().rotation;
+    let rect = item.bounding_rect();
 
     match item {
         BoardItem::Image(img) => {
-            let rect = item.bounding_rect();
-
             // Draw placeholder if texture not yet decoded
             let Some(texture) = &img.texture else {
                 ui.painter().rect_filled(rect, 2.0, Color32::from_gray(60));
@@ -215,25 +214,6 @@ pub fn draw_item(ui: &mut Ui, item: &BoardItem, is_selected: bool) {
                     StrokeKind::Outside,
                 );
             }
-
-            // Draw labels
-            let image_pos = img.transform.position;
-            for label in &img.labels {
-                let label_pos = (image_pos + label.offset).to_pos2();
-                let label_rect = label.bounding_rect(image_pos);
-                ui.painter().rect_filled(
-                    label_rect,
-                    2.0,
-                    Color32::from_rgba_premultiplied(0, 0, 0, 180),
-                );
-                ui.painter().text(
-                    label_pos + Vec2::new(4.0, 2.0),
-                    egui::Align2::LEFT_TOP,
-                    &label.text,
-                    egui::FontId::proportional(label.font_size),
-                    label.color,
-                );
-            }
         }
         BoardItem::Text(txt) => {
             let pos = txt.transform.position.to_pos2();
@@ -241,6 +221,7 @@ pub fn draw_item(ui: &mut Ui, item: &BoardItem, is_selected: bool) {
             let galley = ui
                 .painter()
                 .layout(txt.content.clone(), font, txt.color, f32::INFINITY);
+            txt.cached_size = galley.size();
             let padding = 4.0;
             let text_rect = Rect::from_min_size(pos, galley.size());
             let padded_rect = text_rect.expand(padding);

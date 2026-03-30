@@ -193,7 +193,7 @@ impl HyprBoardApp {
     }
 
     fn save_to(&mut self, path: &std::path::Path) {
-        match persistence::save_board(path, self.board.items()) {
+        match persistence::save_board(path, self.board.items(), self.board.connectors()) {
             Ok(()) => {
                 self.board.mark_clean();
                 self.last_change = None;
@@ -240,8 +240,8 @@ impl HyprBoardApp {
 
     fn load_board(&mut self, _ctx: &Context, path: &std::path::Path) {
         match persistence::load_board(path) {
-            Ok(items) => {
-                self.board.replace_items(items);
+            Ok((items, connectors, max_id)) => {
+                self.board.replace_items(items, connectors, max_id);
                 self.current_file = Some(path.to_path_buf());
                 self.last_change = None;
                 self.recent_files.add(path);
@@ -256,7 +256,8 @@ impl HyprBoardApp {
     fn import_bee(&mut self, path: &std::path::Path) {
         match crate::bee_import::import_bee(path) {
             Ok(items) => {
-                self.board.replace_items(items);
+                let max_id = items.iter().map(|i| i.item_id().0).max().unwrap_or(0);
+                self.board.replace_items(items, Vec::new(), max_id);
                 self.current_file = None;
                 self.last_change = None;
                 log::info!("Imported BeeRef file {}", path.display());
@@ -282,7 +283,7 @@ impl HyprBoardApp {
         }
 
         let autosave_path = file.with_extension("hboard.autosave");
-        match persistence::save_board(&autosave_path, self.board.items()) {
+        match persistence::save_board(&autosave_path, self.board.items(), self.board.connectors()) {
             Ok(()) => {
                 self.last_change = Some(Instant::now());
                 log::debug!("Autosaved to {}", autosave_path.display());
@@ -513,6 +514,23 @@ impl HyprBoardApp {
                 };
                 if Self::toolbar_btn(ui, snap_icon, snap_label).clicked() {
                     self.board.snap_to_grid = !self.board.snap_to_grid;
+                }
+
+                ui.separator();
+
+                let connect_active = self.board.connect_mode;
+                let connect_label = if connect_active {
+                    "Connect Mode: ON (click to disable)"
+                } else {
+                    "Connect Mode (Ctrl+K)"
+                };
+                let icon = if connect_active {
+                    Self::icon(LINK).color(egui::Color32::from_rgb(100, 160, 255))
+                } else {
+                    Self::icon(LINK)
+                };
+                if Self::toolbar_btn(ui, icon, connect_label).clicked() {
+                    self.board.connect_mode = !self.board.connect_mode;
                 }
 
                 ui.separator();
@@ -810,12 +828,15 @@ impl HyprBoardApp {
                             close = true;
                         }
 
-                        ui.separator();
-
-                        if ui.button("Add Label").clicked() {
-                            self.board.add_label_to_selected();
-                            close = true;
+                        if self.board.has_image_selected() {
+                            ui.separator();
+                            if ui.button("Add Note").clicked() {
+                                close = true;
+                                self.board.add_note_to_selected();
+                            }
                         }
+
+                        ui.separator();
                     } else {
                         // Background context menu — mirrors File menu
                         if ui

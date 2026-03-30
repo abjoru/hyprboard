@@ -10,7 +10,7 @@ use egui::{
     containers::{DragPanButtons, Scene},
 };
 
-use crate::items::{BoardItem, Label, load_image_from_bytes};
+use crate::items::{BoardItem, Connector, ConnectorId, ItemId, load_image_from_bytes};
 
 use interaction::InteractionState;
 use undo::{Command, UndoStack};
@@ -19,11 +19,14 @@ use crate::clipboard;
 
 pub struct Board {
     items: Vec<BoardItem>,
+    connectors: Vec<Connector>,
     selected: HashSet<usize>,
+    selected_connectors: HashSet<ConnectorId>,
     scene_rect: Rect,
     interaction: InteractionState,
     undo_stack: UndoStack,
-    next_texture_id: u64,
+    next_id: u64,
+    pub connect_mode: bool,
     pub show_grid: bool,
     pub snap_to_grid: bool,
     pub grid_size: f32,
@@ -44,11 +47,14 @@ impl Default for Board {
         let (download_tx, download_rx) = mpsc::channel();
         Self {
             items: Vec::new(),
+            connectors: Vec::new(),
             selected: HashSet::new(),
+            selected_connectors: HashSet::new(),
             scene_rect: Rect::NOTHING,
             interaction: InteractionState::Idle,
             undo_stack: UndoStack::default(),
-            next_texture_id: 0,
+            next_id: 0,
+            connect_mode: false,
             show_grid: true,
             snap_to_grid: true,
             grid_size: 50.0,
@@ -67,9 +73,13 @@ impl Default for Board {
 }
 
 impl Board {
+    fn alloc_id(&mut self) -> ItemId {
+        self.next_id += 1;
+        ItemId(self.next_id)
+    }
+
     fn next_name(&mut self) -> String {
-        self.next_texture_id += 1;
-        format!("img-{}", self.next_texture_id)
+        format!("img-{}", self.next_id)
     }
 
     fn cascade_pos(&self) -> Vec2 {
@@ -97,9 +107,11 @@ impl Board {
     }
 
     pub fn add_image_from_bytes(&mut self, ctx: &egui::Context, bytes: &[u8], position: Vec2) {
+        let id = self.alloc_id();
         let name = self.next_name();
         if let Some((texture, size, original_bytes)) = load_image_from_bytes(ctx, &name, bytes) {
             self.items.push(BoardItem::new_image(
+                id,
                 texture,
                 original_bytes,
                 size,
@@ -110,11 +122,37 @@ impl Board {
     }
 
     pub fn delete_selected(&mut self) {
+        if self.selected.is_empty() && self.selected_connectors.is_empty() {
+            return;
+        }
+
+        // Delete selected connectors first
+        if !self.selected_connectors.is_empty() {
+            self.delete_selected_connectors();
+        }
+
         if self.selected.is_empty() {
             return;
         }
+
         let mut indices: Vec<usize> = self.selected.iter().copied().collect();
         indices.sort_unstable();
+
+        // Cascade-remove connectors referencing deleted items
+        let deleted_ids: HashSet<ItemId> = indices
+            .iter()
+            .filter_map(|&i| self.items.get(i).map(|item| item.item_id()))
+            .collect();
+        let mut removed_connectors = Vec::new();
+        self.connectors.retain(|c| {
+            if deleted_ids.contains(&c.from) || deleted_ids.contains(&c.to) {
+                removed_connectors.push(c.clone());
+                false
+            } else {
+                true
+            }
+        });
+
         let mut removed = Vec::new();
         for &idx in indices.iter().rev() {
             if idx < self.items.len() {
@@ -122,7 +160,10 @@ impl Board {
             }
         }
         removed.reverse();
-        self.undo_stack.push(Command::Delete { items: removed });
+        self.undo_stack.push(Command::Delete {
+            items: removed,
+            removed_connectors,
+        });
         self.selected.clear();
     }
 
@@ -194,9 +235,10 @@ impl Board {
                 if let Some((texture, size, original_bytes)) =
                     load_image_from_bytes(ctx, &name, &bytes)
                 {
+                    let id = self.alloc_id();
                     let pos = self.cascade_pos();
                     self.items
-                        .push(BoardItem::new_image(texture, original_bytes, size, pos));
+                        .push(BoardItem::new_image(id, texture, original_bytes, size, pos));
                     added += 1;
                 }
             }
@@ -320,8 +362,9 @@ impl Board {
     }
 
     pub fn add_text_at(&mut self, screen_pos: Pos2) {
+        let id = self.alloc_id();
         let pos = self.screen_to_scene(screen_pos);
-        self.items.push(BoardItem::new_text("Text".into(), pos));
+        self.items.push(BoardItem::new_text(id, "Text".into(), pos));
         let idx = self.items.len() - 1;
         self.undo_stack.push(Command::Add { count: 1 });
         self.selected.clear();
@@ -334,11 +377,13 @@ impl Board {
     }
 
     pub fn undo(&mut self) {
-        self.undo_stack.undo(&mut self.items, &mut self.selected);
+        self.undo_stack
+            .undo(&mut self.items, &mut self.connectors, &mut self.selected);
     }
 
     pub fn redo(&mut self) {
-        self.undo_stack.redo(&mut self.items, &mut self.selected);
+        self.undo_stack
+            .redo(&mut self.items, &mut self.connectors, &mut self.selected);
     }
 
     pub fn raise_selected(&mut self) {
@@ -702,7 +747,53 @@ impl Board {
         });
     }
 
-    pub fn add_label_to_selected(&mut self) {
+    #[allow(dead_code)]
+    pub fn add_connector(&mut self, from: ItemId, to: ItemId) {
+        let id = ConnectorId(self.alloc_id().0);
+        let connector = Connector::new(id, from, to);
+        self.connectors.push(connector);
+        self.undo_stack.push(Command::AddConnector { id });
+    }
+
+    pub fn delete_selected_connectors(&mut self) {
+        if self.selected_connectors.is_empty() {
+            return;
+        }
+        let removed: Vec<Connector> = self
+            .selected_connectors
+            .iter()
+            .filter_map(|cid| {
+                let pos = self.connectors.iter().position(|c| c.id == *cid)?;
+                Some(self.connectors.remove(pos))
+            })
+            .collect();
+        if !removed.is_empty() {
+            for c in &removed {
+                self.undo_stack.push(Command::DeleteConnector {
+                    connector: c.clone(),
+                });
+            }
+        }
+        self.selected_connectors.clear();
+    }
+
+    pub fn connectors(&self) -> &[Connector] {
+        &self.connectors
+    }
+
+    #[allow(dead_code)]
+    pub fn selected_connectors(&self) -> &HashSet<ConnectorId> {
+        &self.selected_connectors
+    }
+
+    #[allow(dead_code)]
+    pub fn has_connector_selected(&self) -> bool {
+        !self.selected_connectors.is_empty()
+    }
+
+    /// Add a post-it note to the selected image, auto-connected.
+    /// Returns the index of the new text item so the caller can enter edit mode.
+    pub fn add_note_to_selected(&mut self) -> Option<usize> {
         let indices: Vec<usize> = self.selected.iter().copied().collect();
         for idx in indices {
             if self
@@ -710,18 +801,46 @@ impl Board {
                 .get(idx)
                 .is_some_and(|i| matches!(i, BoardItem::Image(_)))
             {
-                let label_count = self.items[idx].labels().len();
-                let offset = Vec2::new(0.0, -20.0 * (label_count as f32 + 1.0));
-                self.add_label_to_item(idx, offset);
+                return self.add_note_to_item(idx);
             }
         }
+        None
     }
 
-    pub fn add_label_to_item(&mut self, item_idx: usize, offset: Vec2) {
-        if let Some(item) = self.items.get_mut(item_idx) {
-            item.add_label(Label::new("Label".into(), offset));
-            self.undo_stack.push(Command::AddLabel { item_idx });
-        }
+    fn add_note_to_item(&mut self, item_idx: usize) -> Option<usize> {
+        let item = self.items.get(item_idx)?;
+        let image_id = item.item_id();
+        let image_pos = item.transform().position;
+
+        // Position note above the image
+        let note_pos = Vec2::new(image_pos.x, image_pos.y - 30.0);
+
+        let note_id = self.alloc_id();
+        self.items.push(BoardItem::Text(crate::items::TextItem {
+            id: note_id,
+            content: "Note".into(),
+            font_size: 14.0,
+            color: Color32::from_rgb(0x33, 0x33, 0x33),
+            bg_color: Color32::from_rgba_premultiplied(253, 253, 150, 230),
+            border_color: Color32::from_rgb(0xE6, 0xE6, 0x90),
+            transform: crate::items::Transform::default().with_position(note_pos),
+            cached_size: Vec2::ZERO,
+        }));
+        let note_idx = self.items.len() - 1;
+        self.undo_stack.push(Command::Add { count: 1 });
+
+        // Auto-create connector
+        let conn_id = ConnectorId(self.alloc_id().0);
+        let connector = Connector::new(conn_id, image_id, note_id);
+        self.connectors.push(connector);
+        self.undo_stack.push(Command::AddConnector { id: conn_id });
+
+        // Select the note and enter edit mode
+        self.selected.clear();
+        self.selected.insert(note_idx);
+        self.interaction = InteractionState::EditingText { idx: note_idx };
+
+        Some(note_idx)
     }
 
     pub fn reset_crop_selected(&mut self) {
@@ -801,7 +920,9 @@ impl Board {
     pub fn show(&mut self, ui: &mut Ui) {
         let scene_rect = &mut self.scene_rect;
         let items = &mut self.items;
+        let connectors = &mut self.connectors;
         let selected = &mut self.selected;
+        let selected_connectors = &mut self.selected_connectors;
         let state = &mut self.interaction;
         let undo_stack = &mut self.undo_stack;
         let show_grid = self.show_grid;
@@ -809,10 +930,11 @@ impl Board {
         let snap_to_grid = self.snap_to_grid;
         let visible_rect = &mut self.visible_rect;
         let widget_rect = &mut self.widget_rect;
-        let next_texture_id = &mut self.next_texture_id;
+        let next_id = &mut self.next_id;
         let pending_export = &mut self.pending_export;
         let pending_zoom = &mut self.pending_zoom;
         let suppress_input = self.suppress_input;
+        let connect_mode = &mut self.connect_mode;
 
         *widget_rect = ui.max_rect();
 
@@ -830,17 +952,20 @@ impl Board {
                 interaction::render_scene(
                     scene_ui,
                     items,
+                    connectors,
                     selected,
+                    selected_connectors,
                     state,
                     undo_stack,
                     show_grid,
                     grid_size,
                     snap_to_grid,
                     *visible_rect,
-                    next_texture_id,
+                    next_id,
                     pending_export,
                     suppress_input,
                     pending_zoom,
+                    connect_mode,
                 );
             });
 
@@ -850,10 +975,7 @@ impl Board {
     }
 
     pub fn handle_input(&mut self, ctx: &egui::Context) {
-        if matches!(
-            self.interaction,
-            InteractionState::EditingText { .. } | InteractionState::EditingLabel { .. }
-        ) {
+        if matches!(self.interaction, InteractionState::EditingText { .. }) {
             return;
         }
 
@@ -864,7 +986,12 @@ impl Board {
 
         let do_escape = ctx.input(|i| i.key_pressed(Key::Escape));
         if do_escape {
+            if self.connect_mode {
+                self.connect_mode = false;
+                self.interaction = InteractionState::Idle;
+            }
             self.selected.clear();
+            self.selected_connectors.clear();
         }
 
         let raise = ctx.input(|i| i.key_pressed(Key::CloseBracket) && !i.modifiers.ctrl);
@@ -959,6 +1086,15 @@ impl Board {
             self.undo();
         }
 
+        // Ctrl+K toggle connect mode
+        let toggle_connect = ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::K));
+        if toggle_connect {
+            self.connect_mode = !self.connect_mode;
+            if !self.connect_mode {
+                self.interaction = InteractionState::Idle;
+            }
+        }
+
         // Ctrl+G toggle grid, Ctrl+Shift+G toggle snap
         let toggle_grid = ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::G));
         let toggle_snap =
@@ -1015,9 +1151,18 @@ impl Board {
         &self.items
     }
 
-    pub fn replace_items(&mut self, new_items: Vec<BoardItem>) {
+    pub fn replace_items(
+        &mut self,
+        new_items: Vec<BoardItem>,
+        new_connectors: Vec<Connector>,
+        max_id: u64,
+    ) {
         self.items = new_items;
+        self.connectors = new_connectors;
+        self.next_id = max_id;
         self.selected.clear();
+        self.selected_connectors.clear();
+        self.connect_mode = false;
         self.undo_stack = UndoStack::default();
         self.interaction = InteractionState::Idle;
         let (tx, rx) = mpsc::channel();

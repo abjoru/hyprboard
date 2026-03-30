@@ -13,9 +13,11 @@ fn u32_to_color(v: u32) -> Color32 {
     Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
-use crate::items::{BoardItem, ImageItem, Label, TextItem, Transform, image_dimensions};
+use crate::items::{
+    BoardItem, Connector, ConnectorId, ImageItem, ItemId, TextItem, Transform, image_dimensions,
+};
 
-const SCHEMA_VERSION: &str = "3";
+const SCHEMA_VERSION: &str = "4";
 
 fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -47,16 +49,15 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             img_width  REAL,
             img_height REAL,
             bg_color   INTEGER,
-            border_color INTEGER
+            border_color INTEGER,
+            item_id    INTEGER
         );
-        CREATE TABLE IF NOT EXISTS labels (
+        CREATE TABLE IF NOT EXISTS connectors (
             id         INTEGER PRIMARY KEY,
-            item_id    INTEGER NOT NULL REFERENCES items(id),
-            text       TEXT NOT NULL,
-            offset_x   REAL NOT NULL DEFAULT 0.0,
-            offset_y   REAL NOT NULL DEFAULT 0.0,
-            font_size  REAL NOT NULL DEFAULT 14.0,
-            color      INTEGER NOT NULL DEFAULT 4294967295
+            from_id    INTEGER NOT NULL,
+            to_id      INTEGER NOT NULL,
+            color      INTEGER NOT NULL DEFAULT 3014898687,
+            thickness  REAL NOT NULL DEFAULT 2.0
         );",
     )
 }
@@ -82,6 +83,30 @@ fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
         log::info!("Migrated schema: added bg_color/border_color columns");
     }
 
+    let has_item_id: bool = conn.prepare("SELECT item_id FROM items LIMIT 0").is_ok();
+    if !has_item_id {
+        conn.execute("ALTER TABLE items ADD COLUMN item_id INTEGER", [])?;
+        conn.execute("UPDATE items SET item_id = id WHERE item_id IS NULL", [])?;
+        log::info!("Migrated schema: added item_id column");
+    }
+
+    let has_connectors: bool = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='connectors'")
+        .and_then(|mut s| s.query_row([], |_| Ok(true)))
+        .unwrap_or(false);
+    if !has_connectors {
+        conn.execute_batch(
+            "CREATE TABLE connectors (
+                id         INTEGER PRIMARY KEY,
+                from_id    INTEGER NOT NULL,
+                to_id      INTEGER NOT NULL,
+                color      INTEGER NOT NULL DEFAULT 3014898687,
+                thickness  REAL NOT NULL DEFAULT 2.0
+            );",
+        )?;
+        log::info!("Migrated schema: added connectors table");
+    }
+
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
         params!["version", SCHEMA_VERSION],
@@ -90,7 +115,11 @@ fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
+pub fn save_board(
+    path: &Path,
+    items: &[BoardItem],
+    connectors: &[Connector],
+) -> rusqlite::Result<()> {
     // Write to temp file then rename for atomicity
     let tmp_path = path.with_extension("hboard.tmp");
     {
@@ -98,7 +127,7 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
         conn.execute_batch("PRAGMA journal_mode=OFF;")?;
         create_schema(&conn)?;
 
-        conn.execute("DELETE FROM labels", [])?;
+        conn.execute("DELETE FROM connectors", [])?;
         conn.execute("DELETE FROM items", [])?;
         conn.execute("DELETE FROM meta", [])?;
         conn.execute(
@@ -113,20 +142,15 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
                 opacity, grayscale, flip_h, flip_v,
                 content, font_size, color,
                 img_width, img_height,
-                bg_color, border_color
+                bg_color, border_color, item_id
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19,
                 ?20, ?21,
-                ?22, ?23
+                ?22, ?23, ?24
             )",
-        )?;
-
-        let mut label_stmt = conn.prepare(
-            "INSERT INTO labels (item_id, text, offset_x, offset_y, font_size, color)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
 
         for (z_order, item) in items.iter().enumerate() {
@@ -168,19 +192,8 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
                         img.original_size.y as f64,
                         None::<i64>,
                         color_to_u32(img.border_color) as i64,
+                        img.id.0 as i64,
                     ])?;
-
-                    let item_id = conn.last_insert_rowid();
-                    for label in &img.labels {
-                        label_stmt.execute(params![
-                            item_id,
-                            label.text,
-                            label.offset.x as f64,
-                            label.offset.y as f64,
-                            label.font_size as f64,
-                            color_to_u32(label.color) as i64,
-                        ])?;
-                    }
                 }
                 BoardItem::Text(txt) => {
                     stmt.execute(params![
@@ -207,9 +220,25 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
                         None::<f64>,
                         color_to_u32(txt.bg_color) as i64,
                         color_to_u32(txt.border_color) as i64,
+                        txt.id.0 as i64,
                     ])?;
                 }
             }
+        }
+
+        // Save connectors
+        let mut conn_stmt = conn.prepare(
+            "INSERT INTO connectors (id, from_id, to_id, color, thickness)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for c in connectors {
+            conn_stmt.execute(params![
+                c.id.0 as i64,
+                c.from.0 as i64,
+                c.to.0 as i64,
+                color_to_u32(c.color) as i64,
+                c.thickness as f64,
+            ])?;
         }
     }
 
@@ -219,7 +248,8 @@ pub fn save_board(path: &Path, items: &[BoardItem]) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
+/// Returns (items, connectors, max_id) so Board can resume ID allocation.
+pub fn load_board(path: &Path) -> rusqlite::Result<(Vec<BoardItem>, Vec<Connector>, u64)> {
     let conn = Connection::open(path)?;
 
     // Migrate if needed
@@ -231,16 +261,28 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
                 opacity, grayscale, flip_h, flip_v,
                 content, font_size, color,
                 img_width, img_height,
-                bg_color, border_color
+                bg_color, border_color, item_id
          FROM items ORDER BY z_order ASC",
     )?;
 
-    let mut label_stmt = conn.prepare(
-        "SELECT text, offset_x, offset_y, font_size, color
-         FROM labels WHERE item_id = ?1",
-    )?;
+    // Check if legacy labels table exists for migration
+    let has_labels_table: bool = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='labels'")
+        .and_then(|mut s| s.query_row([], |_| Ok(true)))
+        .unwrap_or(false);
+
+    let mut label_stmt = if has_labels_table {
+        Some(conn.prepare(
+            "SELECT text, offset_x, offset_y, font_size, color
+             FROM labels WHERE item_id = ?1",
+        )?)
+    } else {
+        None
+    };
 
     let mut items = Vec::new();
+    let mut max_id: u64 = 0;
+    let mut fallback_id: u64 = 0;
 
     let rows = stmt.query_map([], |row| {
         Ok(RawRow {
@@ -267,6 +309,7 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
             img_height: row.get(20)?,
             bg_color: row.get(21)?,
             border_color: row.get(22)?,
+            item_id: row.get(23)?,
         })
     })?;
 
@@ -276,6 +319,18 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
             position: Vec2::new(row.pos_x as f32, row.pos_y as f32),
             rotation: row.rotation as f32,
             scale: Vec2::new(row.scale_x as f32, row.scale_y as f32),
+        };
+
+        let id = match row.item_id {
+            Some(v) => {
+                let v = v as u64;
+                max_id = max_id.max(v);
+                ItemId(v)
+            }
+            None => {
+                fallback_id += 1;
+                ItemId(fallback_id)
+            }
         };
 
         match row.item_type.as_str() {
@@ -298,29 +353,12 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
                     _ => None,
                 };
 
-                // Load labels for this item
-                let labels: Vec<Label> = label_stmt
-                    .query_map(params![row.id], |lrow| {
-                        let text: String = lrow.get(0)?;
-                        let offset_x: f64 = lrow.get(1)?;
-                        let offset_y: f64 = lrow.get(2)?;
-                        let font_size: f64 = lrow.get(3)?;
-                        let color_val: i64 = lrow.get(4)?;
-                        Ok((text, offset_x, offset_y, font_size, color_val))
-                    })?
-                    .filter_map(|r| r.ok())
-                    .map(|(text, ox, oy, fs, cv)| Label {
-                        text,
-                        offset: Vec2::new(ox as f32, oy as f32),
-                        font_size: fs as f32,
-                        color: u32_to_color(cv as u32),
-                    })
-                    .collect();
-
                 // Lazy load: don't decode, just store bytes + dimensions
                 let border_color = u32_to_color(row.border_color.unwrap_or(0) as u32);
+                let image_pos = transform.position;
 
                 items.push(BoardItem::Image(ImageItem {
+                    id,
                     texture: None,
                     original_bytes: Arc::from(bytes),
                     original_size,
@@ -330,9 +368,40 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
                     grayscale: row.grayscale.unwrap_or(0) != 0,
                     flip_h: row.flip_h.unwrap_or(0) != 0,
                     flip_v: row.flip_v.unwrap_or(0) != 0,
-                    labels,
                     border_color,
                 }));
+
+                // Migrate legacy labels to standalone TextItems
+                if let Some(ref mut lstmt) = label_stmt {
+                    let legacy_labels: Vec<(String, f64, f64, f64, i64)> = lstmt
+                        .query_map(params![row.id], |lrow| {
+                            Ok((
+                                lrow.get(0)?,
+                                lrow.get(1)?,
+                                lrow.get(2)?,
+                                lrow.get(3)?,
+                                lrow.get(4)?,
+                            ))
+                        })?
+                        .filter_map(|r| r.ok())
+                        .collect();
+
+                    for (text, ox, oy, fs, cv) in legacy_labels {
+                        fallback_id += 1;
+                        let text_id = ItemId(fallback_id);
+                        let abs_pos = Vec2::new(image_pos.x + ox as f32, image_pos.y + oy as f32);
+                        items.push(BoardItem::Text(TextItem {
+                            id: text_id,
+                            content: text,
+                            font_size: fs as f32,
+                            color: u32_to_color(cv as u32),
+                            bg_color: Color32::from_rgba_premultiplied(0, 0, 0, 180),
+                            border_color: Color32::TRANSPARENT,
+                            transform: Transform::default().with_position(abs_pos),
+                            cached_size: Vec2::ZERO,
+                        }));
+                    }
+                }
             }
             "text" => {
                 let content = row.content.unwrap_or_default();
@@ -342,19 +411,56 @@ pub fn load_board(path: &Path) -> rusqlite::Result<Vec<BoardItem>> {
                 let border_color = u32_to_color(row.border_color.unwrap_or(0) as u32);
 
                 items.push(BoardItem::Text(TextItem {
+                    id,
                     content,
                     font_size,
                     color,
                     bg_color,
                     border_color,
                     transform,
+                    cached_size: Vec2::ZERO,
                 }));
             }
             _ => {}
         }
     }
 
-    Ok(items)
+    max_id = max_id.max(fallback_id);
+
+    // Load connectors
+    let mut loaded_connectors = Vec::new();
+    let has_connectors_table: bool = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='connectors'")
+        .and_then(|mut s| s.query_row([], |_| Ok(true)))
+        .unwrap_or(false);
+
+    if has_connectors_table {
+        let mut cstmt =
+            conn.prepare("SELECT id, from_id, to_id, color, thickness FROM connectors")?;
+        let crows = cstmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, f64>(4)?,
+            ))
+        })?;
+        for crow in crows {
+            let (cid, from_id, to_id, color, thickness) = crow?;
+            let cid = cid as u64;
+            max_id = max_id.max(cid);
+            loaded_connectors.push(Connector {
+                id: ConnectorId(cid),
+                from: ItemId(from_id as u64),
+                to: ItemId(to_id as u64),
+                color: u32_to_color(color as u32),
+                thickness: thickness as f32,
+            });
+        }
+    }
+
+    Ok((items, loaded_connectors, max_id))
 }
 
 struct RawRow {
@@ -381,6 +487,7 @@ struct RawRow {
     img_height: Option<f64>,
     bg_color: Option<i64>,
     border_color: Option<i64>,
+    item_id: Option<i64>,
 }
 
 #[cfg(test)]
@@ -406,6 +513,7 @@ mod tests {
 
         let png = make_test_png(10, 10);
         let items = vec![BoardItem::Image(ImageItem {
+            id: ItemId(1),
             texture: None,
             original_bytes: Arc::from(png.as_slice()),
             original_size: Vec2::new(10.0, 10.0),
@@ -422,18 +530,13 @@ mod tests {
             grayscale: true,
             flip_h: true,
             flip_v: false,
-            labels: vec![Label {
-                text: "test label".into(),
-                offset: Vec2::new(10.0, -20.0),
-                font_size: 18.0,
-                color: egui::Color32::from_rgb(255, 128, 0),
-            }],
             border_color: egui::Color32::TRANSPARENT,
         })];
 
-        save_board(&path, &items).unwrap();
+        save_board(&path, &items, &[]).unwrap();
 
-        let loaded = load_board(&path).unwrap();
+        let (loaded, _, max_id) = load_board(&path).unwrap();
+        assert_eq!(max_id, 1);
 
         assert_eq!(loaded.len(), 1);
         let BoardItem::Image(img) = &loaded[0] else {
@@ -451,10 +554,6 @@ mod tests {
         assert!(img.grayscale);
         assert!(img.flip_h);
         assert!(!img.flip_v);
-        assert_eq!(img.labels.len(), 1);
-        assert_eq!(img.labels[0].text, "test label");
-        assert!((img.labels[0].offset.x - 10.0).abs() < 0.01);
-        assert!((img.labels[0].font_size - 18.0).abs() < 0.01);
         assert_eq!(&img.original_bytes[..], &png[..]);
 
         let _ = std::fs::remove_file(&path);
@@ -466,6 +565,7 @@ mod tests {
         let path = dir.join("test_roundtrip_text.hboard");
 
         let items = vec![BoardItem::Text(TextItem {
+            id: ItemId(1),
             content: "hello world".into(),
             font_size: 24.0,
             color: egui::Color32::from_rgb(0, 255, 128),
@@ -476,11 +576,12 @@ mod tests {
                 rotation: 0.0,
                 scale: Vec2::splat(1.0),
             },
+            cached_size: Vec2::ZERO,
         })];
 
-        save_board(&path, &items).unwrap();
+        save_board(&path, &items, &[]).unwrap();
 
-        let loaded = load_board(&path).unwrap();
+        let (loaded, _, _) = load_board(&path).unwrap();
 
         assert_eq!(loaded.len(), 1);
         let BoardItem::Text(txt) = &loaded[0] else {
@@ -501,6 +602,7 @@ mod tests {
         let png = make_test_png(4, 4);
         let items = vec![
             BoardItem::Image(ImageItem {
+                id: ItemId(1),
                 texture: None,
                 original_bytes: Arc::from(png.as_slice()),
                 original_size: Vec2::new(4.0, 4.0),
@@ -510,22 +612,23 @@ mod tests {
                 grayscale: false,
                 flip_h: false,
                 flip_v: false,
-                labels: Vec::new(),
                 border_color: egui::Color32::TRANSPARENT,
             }),
             BoardItem::Text(TextItem {
+                id: ItemId(2),
                 content: "note".into(),
                 font_size: 16.0,
                 color: egui::Color32::WHITE,
                 bg_color: egui::Color32::TRANSPARENT,
                 border_color: egui::Color32::TRANSPARENT,
                 transform: Transform::default().with_position(Vec2::new(50.0, 50.0)),
+                cached_size: Vec2::ZERO,
             }),
         ];
 
-        save_board(&path, &items).unwrap();
+        save_board(&path, &items, &[]).unwrap();
 
-        let loaded = load_board(&path).unwrap();
+        let (loaded, _, _) = load_board(&path).unwrap();
 
         assert_eq!(loaded.len(), 2);
         assert!(matches!(&loaded[0], BoardItem::Image(_)));

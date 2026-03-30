@@ -7,7 +7,7 @@ use printpdf::{
 };
 
 use crate::clipboard::apply_transforms;
-use crate::items::{BoardItem, Label};
+use crate::items::BoardItem;
 
 /// Page size presets.
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -100,7 +100,7 @@ fn export_single_page(items: &[BoardItem], page_size: PageSize) -> Result<Vec<u8
     let font = doc
         .add_builtin_font(BuiltinFont::Helvetica)
         .map_err(|e| e.to_string())?;
-    let bold = doc
+    let _bold = doc
         .add_builtin_font(BuiltinFont::HelveticaBold)
         .map_err(|e| e.to_string())?;
     let layer_ref = doc.get_page(page).get_layer(layer);
@@ -121,7 +121,7 @@ fn export_single_page(items: &[BoardItem], page_size: PageSize) -> Result<Vec<u8
         let pdf_x = offset_x + rel_x;
         let pdf_y = ph - offset_y - rel_y - item_h;
 
-        draw_item(&layer_ref, &font, &bold, item, pdf_x, pdf_y, item_w, item_h)?;
+        draw_item(&layer_ref, &font, item, pdf_x, pdf_y, item_w, item_h)?;
     }
 
     doc.save_to_bytes().map_err(|e| e.to_string())
@@ -204,7 +204,7 @@ fn export_multi_page(items: &[BoardItem], page_size: PageSize) -> Result<Vec<u8>
     let font = doc
         .add_builtin_font(BuiltinFont::Helvetica)
         .map_err(|e| e.to_string())?;
-    let bold = doc
+    let _bold = doc
         .add_builtin_font(BuiltinFont::HelveticaBold)
         .map_err(|e| e.to_string())?;
 
@@ -219,16 +219,7 @@ fn export_multi_page(items: &[BoardItem], page_size: PageSize) -> Result<Vec<u8>
         for &(item_idx, x, y, w, h) in page_items {
             let pdf_x = MARGIN_MM + x;
             let pdf_y = ph - MARGIN_MM - y - h;
-            draw_item(
-                &layer_ref,
-                &font,
-                &bold,
-                &items[item_idx],
-                pdf_x,
-                pdf_y,
-                w,
-                h,
-            )?;
+            draw_item(&layer_ref, &font, &items[item_idx], pdf_x, pdf_y, w, h)?;
         }
     }
 
@@ -251,7 +242,6 @@ fn items_bounding_rect(items: &[BoardItem]) -> egui::Rect {
 fn draw_item(
     layer: &PdfLayerReference,
     font: &IndirectFontRef,
-    bold: &IndirectFontRef,
     item: &BoardItem,
     pdf_x: f32,
     pdf_y: f32,
@@ -273,10 +263,6 @@ fn draw_item(
             )?;
 
             embed_image(layer, &rgba, pdf_x, pdf_y, target_w, target_h)?;
-
-            for label in &img.labels {
-                draw_label(layer, bold, label, pdf_x, pdf_y, target_w, target_h, item);
-            }
         }
         BoardItem::Text(txt) => {
             draw_text(
@@ -369,46 +355,6 @@ fn embed_image(
     Ok(())
 }
 
-/// Draw a label relative to its parent image in PDF coords.
-#[allow(clippy::too_many_arguments)]
-fn draw_label(
-    layer: &PdfLayerReference,
-    bold: &IndirectFontRef,
-    label: &Label,
-    img_pdf_x: f32,
-    img_pdf_y: f32,
-    img_w: f32,
-    img_h: f32,
-    item: &BoardItem,
-) {
-    let display = item.display_size();
-    let sx = if display.x.abs() > 0.001 {
-        img_w / display.x
-    } else {
-        1.0
-    };
-    let sy = if display.y.abs() > 0.001 {
-        img_h / display.y
-    } else {
-        1.0
-    };
-
-    let label_x = img_pdf_x + label.offset.x * sx;
-    // PDF y: image bottom-left + (image_height - label_offset_y * scale) - font_height
-    let font_h_mm = label.font_size * 0.3528; // pt to mm approx
-    let label_y = img_pdf_y + img_h - label.offset.y * sy - font_h_mm;
-
-    draw_text(
-        layer,
-        bold,
-        &label.text,
-        label.font_size,
-        label.color,
-        label_x,
-        label_y,
-    );
-}
-
 fn draw_text(
     layer: &PdfLayerReference,
     font: &IndirectFontRef,
@@ -442,7 +388,7 @@ fn draw_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::items::{ImageItem, TextItem, Transform};
+    use crate::items::{ImageItem, ItemId, TextItem, Transform};
     use std::sync::Arc;
 
     fn test_png(w: u32, h: u32) -> Vec<u8> {
@@ -458,6 +404,7 @@ mod tests {
 
     fn make_image(x: f32, y: f32, w: f32, h: f32) -> BoardItem {
         BoardItem::Image(ImageItem {
+            id: ItemId(0),
             texture: None,
             original_bytes: Arc::from(test_png(w as u32, h as u32)),
             original_size: egui::Vec2::new(w, h),
@@ -467,7 +414,6 @@ mod tests {
             grayscale: false,
             flip_h: false,
             flip_v: false,
-            labels: Vec::new(),
             border_color: egui::Color32::TRANSPARENT,
         })
     }
@@ -490,12 +436,14 @@ mod tests {
     #[test]
     fn text_items_exported() {
         let items = vec![BoardItem::Text(TextItem {
+            id: ItemId(0),
             content: "Hello PDF".into(),
             font_size: 16.0,
             color: egui::Color32::WHITE,
             bg_color: egui::Color32::TRANSPARENT,
             border_color: egui::Color32::TRANSPARENT,
             transform: Transform::default().with_position(egui::Vec2::new(10.0, 20.0)),
+            cached_size: egui::Vec2::ZERO,
         })];
         let bytes = export_pdf(&items, PdfMode::SinglePage, PageSize::A4).unwrap();
         assert!(bytes.starts_with(b"%PDF"));
@@ -506,12 +454,14 @@ mod tests {
         let items = vec![
             make_image(0.0, 0.0, 200.0, 150.0),
             BoardItem::Text(TextItem {
+                id: ItemId(0),
                 content: "Caption".into(),
                 font_size: 12.0,
                 color: egui::Color32::BLACK,
                 bg_color: egui::Color32::TRANSPARENT,
                 border_color: egui::Color32::TRANSPARENT,
                 transform: Transform::default().with_position(egui::Vec2::new(0.0, 160.0)),
+                cached_size: egui::Vec2::ZERO,
             }),
             make_image(220.0, 0.0, 300.0, 200.0),
         ];
@@ -523,16 +473,5 @@ mod tests {
     fn empty_items_error() {
         let result = export_pdf(&[], PdfMode::SinglePage, PageSize::A4);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn labels_included() {
-        let mut item = make_image(0.0, 0.0, 200.0, 150.0);
-        item.add_label(Label::new(
-            "Test label".into(),
-            egui::Vec2::new(10.0, -20.0),
-        ));
-        let bytes = export_pdf(&[item], PdfMode::SinglePage, PageSize::A4).unwrap();
-        assert!(bytes.starts_with(b"%PDF"));
     }
 }
