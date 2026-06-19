@@ -20,7 +20,7 @@ jobs:
         target:
           - x86_64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Get version from tag
         id: get_version
