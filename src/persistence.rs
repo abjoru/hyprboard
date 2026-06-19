@@ -4,10 +4,8 @@ use std::sync::Arc;
 use egui::{Color32, Vec2};
 use rusqlite::{Connection, params};
 
-use crate::codec::{color_to_u32, u32_to_color};
-use crate::items::{
-    BoardItem, Connector, ConnectorId, ImageItem, ItemId, TextItem, Transform, image_dimensions,
-};
+use crate::codec::{ImageRecord, ItemRecord, TextRecord, color_to_u32, u32_to_color};
+use crate::items::{BoardItem, Connector, ConnectorId, ItemId, TextItem, Transform};
 
 const SCHEMA_VERSION: &str = "4";
 
@@ -146,56 +144,62 @@ pub fn save_board(
         )?;
 
         for (z_order, item) in items.iter().enumerate() {
-            match item {
-                BoardItem::Image(img) => {
-                    let (cx, cy, cw, ch) = img
-                        .crop_rect
-                        .map(|r| {
+            // z_order tracks list position; the rest is the storage-shaped
+            // record, binding each variant's live columns and NULL for the rest.
+            match ItemRecord::from_item(item) {
+                ItemRecord::Image(r) => {
+                    let (cx, cy, cw, ch) = r
+                        .crop
+                        .map(|(x, y, w, h)| {
                             (
-                                Some(r.min.x as f64),
-                                Some(r.min.y as f64),
-                                Some(r.width() as f64),
-                                Some(r.height() as f64),
+                                Some(x as f64),
+                                Some(y as f64),
+                                Some(w as f64),
+                                Some(h as f64),
                             )
                         })
                         .unwrap_or((None, None, None, None));
+                    let (iw, ih) = r
+                        .dimensions
+                        .map(|(w, h)| (Some(w as f64), Some(h as f64)))
+                        .unwrap_or((None, None));
 
                     stmt.execute(params![
                         z_order as i64,
                         "image",
-                        img.transform.position.x as f64,
-                        img.transform.position.y as f64,
-                        img.transform.scale.x as f64,
-                        img.transform.scale.y as f64,
-                        img.transform.rotation as f64,
-                        &*img.original_bytes,
+                        r.pos.0 as f64,
+                        r.pos.1 as f64,
+                        r.scale.0 as f64,
+                        r.scale.1 as f64,
+                        r.rotation as f64,
+                        &*r.bytes,
                         cx,
                         cy,
                         cw,
                         ch,
-                        img.opacity as f64,
-                        img.grayscale as i32,
-                        img.flip_h as i32,
-                        img.flip_v as i32,
+                        r.opacity as f64,
+                        r.grayscale as i32,
+                        r.flip_h as i32,
+                        r.flip_v as i32,
                         None::<String>,
                         None::<f64>,
                         None::<i64>,
-                        img.original_size.x as f64,
-                        img.original_size.y as f64,
+                        iw,
+                        ih,
                         None::<i64>,
-                        color_to_u32(img.border_color) as i64,
-                        img.id.0 as i64,
+                        r.border_color as i64,
+                        r.id as i64,
                     ])?;
                 }
-                BoardItem::Text(txt) => {
+                ItemRecord::Text(r) => {
                     stmt.execute(params![
                         z_order as i64,
                         "text",
-                        txt.transform.position.x as f64,
-                        txt.transform.position.y as f64,
-                        txt.transform.scale.x as f64,
-                        txt.transform.scale.y as f64,
-                        txt.transform.rotation as f64,
+                        r.pos.0 as f64,
+                        r.pos.1 as f64,
+                        r.scale.0 as f64,
+                        r.scale.1 as f64,
+                        r.rotation as f64,
                         None::<Vec<u8>>,
                         None::<f64>,
                         None::<f64>,
@@ -205,14 +209,14 @@ pub fn save_board(
                         None::<i32>,
                         None::<i32>,
                         None::<i32>,
-                        &txt.content,
-                        txt.font_size as f64,
-                        color_to_u32(txt.color),
+                        &r.content,
+                        r.font_size as f64,
+                        r.color,
                         None::<f64>,
                         None::<f64>,
-                        color_to_u32(txt.bg_color) as i64,
-                        color_to_u32(txt.border_color) as i64,
-                        txt.id.0 as i64,
+                        r.bg_color as i64,
+                        r.border_color as i64,
+                        r.id as i64,
                     ])?;
                 }
             }
@@ -276,144 +280,133 @@ pub fn load_board(path: &Path) -> rusqlite::Result<(Vec<BoardItem>, Vec<Connecto
     let mut max_id: u64 = 0;
     let mut fallback_id: u64 = 0;
 
+    // Read each row's columns into a storage record (id placeholder 0, resolved
+    // below); the db primary key and raw item_id ride alongside for id
+    // allocation and the legacy-label join.
     let rows = stmt.query_map([], |row| {
-        Ok(RawRow {
-            id: row.get(0)?,
-            item_type: row.get(1)?,
-            pos_x: row.get(2)?,
-            pos_y: row.get(3)?,
-            scale_x: row.get(4)?,
-            scale_y: row.get(5)?,
-            rotation: row.get(6)?,
-            image_data: row.get(7)?,
-            crop_x: row.get(8)?,
-            crop_y: row.get(9)?,
-            crop_w: row.get(10)?,
-            crop_h: row.get(11)?,
-            opacity: row.get(12)?,
-            grayscale: row.get(13)?,
-            flip_h: row.get(14)?,
-            flip_v: row.get(15)?,
-            content: row.get(16)?,
-            font_size: row.get(17)?,
-            color: row.get(18)?,
-            img_width: row.get(19)?,
-            img_height: row.get(20)?,
-            bg_color: row.get(21)?,
-            border_color: row.get(22)?,
-            item_id: row.get(23)?,
-        })
+        let db_id: i64 = row.get(0)?;
+        let item_type: String = row.get(1)?;
+        let item_id: Option<i64> = row.get(23)?;
+        let pos = (row.get::<_, f64>(2)? as f32, row.get::<_, f64>(3)? as f32);
+        let scale = (row.get::<_, f64>(4)? as f32, row.get::<_, f64>(5)? as f32);
+        let rotation = row.get::<_, f64>(6)? as f32;
+
+        let record = match item_type.as_str() {
+            "image" => match row.get::<_, Option<Vec<u8>>>(7)? {
+                Some(bytes) => {
+                    let crop = match (
+                        row.get::<_, Option<f64>>(8)?,
+                        row.get::<_, Option<f64>>(9)?,
+                        row.get::<_, Option<f64>>(10)?,
+                        row.get::<_, Option<f64>>(11)?,
+                    ) {
+                        (Some(x), Some(y), Some(w), Some(h)) => {
+                            Some((x as f32, y as f32, w as f32, h as f32))
+                        }
+                        _ => None,
+                    };
+                    let dimensions = match (
+                        row.get::<_, Option<f64>>(19)?,
+                        row.get::<_, Option<f64>>(20)?,
+                    ) {
+                        (Some(w), Some(h)) => Some((w as f32, h as f32)),
+                        _ => None,
+                    };
+                    Some(ItemRecord::Image(ImageRecord {
+                        id: 0,
+                        pos,
+                        scale,
+                        rotation,
+                        bytes: Arc::from(bytes),
+                        dimensions,
+                        crop,
+                        opacity: row.get::<_, Option<f64>>(12)?.unwrap_or(1.0) as f32,
+                        grayscale: row.get::<_, Option<i32>>(13)?.unwrap_or(0) != 0,
+                        flip_h: row.get::<_, Option<i32>>(14)?.unwrap_or(0) != 0,
+                        flip_v: row.get::<_, Option<i32>>(15)?.unwrap_or(0) != 0,
+                        border_color: row.get::<_, Option<i64>>(22)?.unwrap_or(0) as u32,
+                    }))
+                }
+                None => None,
+            },
+            "text" => Some(ItemRecord::Text(TextRecord {
+                id: 0,
+                pos,
+                scale,
+                rotation,
+                content: row.get::<_, Option<String>>(16)?.unwrap_or_default(),
+                font_size: row.get::<_, Option<f64>>(17)?.unwrap_or(16.0) as f32,
+                color: row.get::<_, Option<i64>>(18)?.unwrap_or(0xFFFFFFFF) as u32,
+                bg_color: row.get::<_, Option<i64>>(21)?.unwrap_or(0) as u32,
+                border_color: row.get::<_, Option<i64>>(22)?.unwrap_or(0) as u32,
+            })),
+            _ => None,
+        };
+
+        Ok((db_id, item_id, record))
     })?;
 
     for row in rows {
-        let row = row?;
-        let transform = Transform {
-            position: Vec2::new(row.pos_x as f32, row.pos_y as f32),
-            rotation: row.rotation as f32,
-            scale: Vec2::new(row.scale_x as f32, row.scale_y as f32),
-        };
+        let (db_id, item_id, record) = row?;
 
-        let id = match row.item_id {
+        // Resolve the stable id for every row (fallback counter advances even
+        // for skipped rows, matching prior load ordering).
+        let id = match item_id {
             Some(v) => {
                 let v = v as u64;
                 max_id = max_id.max(v);
-                ItemId(v)
+                v
             }
             None => {
                 fallback_id += 1;
-                ItemId(fallback_id)
+                fallback_id
             }
         };
 
-        match row.item_type.as_str() {
-            "image" => {
-                let Some(bytes) = row.image_data else {
-                    continue;
-                };
-
-                // Use stored dimensions if available, else probe
-                let original_size = match (row.img_width, row.img_height) {
-                    (Some(w), Some(h)) => Vec2::new(w as f32, h as f32),
-                    _ => image_dimensions(&bytes).unwrap_or(Vec2::new(100.0, 100.0)),
-                };
-
-                let crop_rect = match (row.crop_x, row.crop_y, row.crop_w, row.crop_h) {
-                    (Some(x), Some(y), Some(w), Some(h)) => Some(egui::Rect::from_min_size(
-                        egui::pos2(x as f32, y as f32),
-                        Vec2::new(w as f32, h as f32),
-                    )),
-                    _ => None,
-                };
-
-                // Lazy load: don't decode, just store bytes + dimensions
-                let border_color = u32_to_color(row.border_color.unwrap_or(0) as u32);
-                let image_pos = transform.position;
-
-                items.push(BoardItem::Image(ImageItem {
-                    id,
-                    texture: None,
-                    original_bytes: Arc::from(bytes),
-                    original_size,
-                    transform,
-                    crop_rect,
-                    opacity: row.opacity.unwrap_or(1.0) as f32,
-                    grayscale: row.grayscale.unwrap_or(0) != 0,
-                    flip_h: row.flip_h.unwrap_or(0) != 0,
-                    flip_v: row.flip_v.unwrap_or(0) != 0,
-                    border_color,
-                }));
-
-                // Migrate legacy labels to standalone TextItems
-                if let Some(ref mut lstmt) = label_stmt {
-                    let legacy_labels: Vec<(String, f64, f64, f64, i64)> = lstmt
-                        .query_map(params![row.id], |lrow| {
-                            Ok((
-                                lrow.get(0)?,
-                                lrow.get(1)?,
-                                lrow.get(2)?,
-                                lrow.get(3)?,
-                                lrow.get(4)?,
-                            ))
-                        })?
-                        .filter_map(|r| r.ok())
-                        .collect();
-
-                    for (text, ox, oy, fs, cv) in legacy_labels {
-                        fallback_id += 1;
-                        let text_id = ItemId(fallback_id);
-                        let abs_pos = Vec2::new(image_pos.x + ox as f32, image_pos.y + oy as f32);
-                        items.push(BoardItem::Text(TextItem {
-                            id: text_id,
-                            content: text,
-                            font_size: fs as f32,
-                            color: u32_to_color(cv as u32),
-                            bg_color: Color32::from_rgba_premultiplied(0, 0, 0, 180),
-                            border_color: Color32::TRANSPARENT,
-                            transform: Transform::default().with_position(abs_pos),
-                            cached_size: Vec2::ZERO,
-                        }));
-                    }
-                }
+        let Some(mut record) = record else { continue };
+        let image_pos = match &mut record {
+            ItemRecord::Image(r) => {
+                r.id = id;
+                Some(Vec2::new(r.pos.0, r.pos.1))
             }
-            "text" => {
-                let content = row.content.unwrap_or_default();
-                let font_size = row.font_size.unwrap_or(16.0) as f32;
-                let color = u32_to_color(row.color.unwrap_or(0xFFFFFFFF) as u32);
-                let bg_color = u32_to_color(row.bg_color.unwrap_or(0) as u32);
-                let border_color = u32_to_color(row.border_color.unwrap_or(0) as u32);
+            ItemRecord::Text(r) => {
+                r.id = id;
+                None
+            }
+        };
 
+        items.push(record.into_item());
+
+        // Migrate legacy labels to standalone TextItems (images only)
+        if let (Some(image_pos), Some(ref mut lstmt)) = (image_pos, label_stmt.as_mut()) {
+            let legacy_labels: Vec<(String, f64, f64, f64, i64)> = lstmt
+                .query_map(params![db_id], |lrow| {
+                    Ok((
+                        lrow.get(0)?,
+                        lrow.get(1)?,
+                        lrow.get(2)?,
+                        lrow.get(3)?,
+                        lrow.get(4)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            for (text, ox, oy, fs, cv) in legacy_labels {
+                fallback_id += 1;
+                let text_id = ItemId(fallback_id);
+                let abs_pos = Vec2::new(image_pos.x + ox as f32, image_pos.y + oy as f32);
                 items.push(BoardItem::Text(TextItem {
-                    id,
-                    content,
-                    font_size,
-                    color,
-                    bg_color,
-                    border_color,
-                    transform,
+                    id: text_id,
+                    content: text,
+                    font_size: fs as f32,
+                    color: u32_to_color(cv as u32),
+                    bg_color: Color32::from_rgba_premultiplied(0, 0, 0, 180),
+                    border_color: Color32::TRANSPARENT,
+                    transform: Transform::default().with_position(abs_pos),
                     cached_size: Vec2::ZERO,
                 }));
             }
-            _ => {}
         }
     }
 
@@ -455,36 +448,10 @@ pub fn load_board(path: &Path) -> rusqlite::Result<(Vec<BoardItem>, Vec<Connecto
     Ok((items, loaded_connectors, max_id))
 }
 
-struct RawRow {
-    id: i64,
-    item_type: String,
-    pos_x: f64,
-    pos_y: f64,
-    scale_x: f64,
-    scale_y: f64,
-    rotation: f64,
-    image_data: Option<Vec<u8>>,
-    crop_x: Option<f64>,
-    crop_y: Option<f64>,
-    crop_w: Option<f64>,
-    crop_h: Option<f64>,
-    opacity: Option<f64>,
-    grayscale: Option<i32>,
-    flip_h: Option<i32>,
-    flip_v: Option<i32>,
-    content: Option<String>,
-    font_size: Option<f64>,
-    color: Option<i64>,
-    img_width: Option<f64>,
-    img_height: Option<f64>,
-    bg_color: Option<i64>,
-    border_color: Option<i64>,
-    item_id: Option<i64>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::items::ImageItem;
     use image::RgbaImage;
 
     fn make_test_png(w: u32, h: u32) -> Vec<u8> {
