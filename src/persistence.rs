@@ -4,15 +4,7 @@ use std::sync::Arc;
 use egui::{Color32, Vec2};
 use rusqlite::{Connection, params};
 
-fn color_to_u32(c: Color32) -> u32 {
-    u32::from_be_bytes([c.r(), c.g(), c.b(), c.a()])
-}
-
-fn u32_to_color(v: u32) -> Color32 {
-    let [r, g, b, a] = v.to_be_bytes();
-    Color32::from_rgba_unmultiplied(r, g, b, a)
-}
-
+use crate::codec::{color_to_u32, u32_to_color};
 use crate::items::{
     BoardItem, Connector, ConnectorId, ImageItem, ItemId, TextItem, Transform, image_dimensions,
 };

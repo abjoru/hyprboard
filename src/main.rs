@@ -2,6 +2,7 @@ mod app;
 mod bee_import;
 mod board;
 mod clipboard;
+mod codec;
 mod items;
 mod pdf_export;
 mod persistence;
